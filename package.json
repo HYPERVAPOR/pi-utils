@@ -1,0 +1,33 @@
+{
+  "name": "pi-utils",
+  "version": "0.1.0",
+  "description": "Small pi extensions for everyday terminal coding: /tools, /copy-code, /keepctx, web_search.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "extensions",
+    "clipboard",
+    "compaction",
+    "web-search"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HYPERVAPOR/pi-utils.git"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/keepctx.ts",
+      "./extensions/tools.ts",
+      "./extensions/copy-code.ts",
+      "./extensions/deepseek-search.ts"
+    ]
+  }
+}

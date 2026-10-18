@@ -1,0 +1,56 @@
+/**
+ * Self-check for gutter.ts. Run with plain node:
+ *
+ *   node copy-code/test/gutter.test.ts
+ */
+import assert from "node:assert/strict";
+import { withBlockIds } from "../gutter.ts";
+
+const assistant = { messageType: "assistant", isStreaming: false, availableWidth: 80 } as const;
+const thinking = { messageType: "assistant-thinking", isStreaming: false, availableWidth: 80 } as const;
+const user = { messageType: "user", isStreaming: false, availableWidth: 80 } as const;
+
+const md = "before\n\n```ts\nconst a = 1;\n```\n\nafter\n";
+
+// The id lands on its own line directly above the fence, as an inline code span so the
+// theme colors it; the code itself is untouched.
+assert.equal(
+  withBlockIds(md, assistant, new Map([[md.trim(), [7]]])),
+  "before\n\n`code block 7`\n```ts\nconst a = 1;\n```\n\nafter",
+);
+
+// Several blocks get their own ids, in order, including blocks with no language.
+const two = "```a\n1\n```\n\n~~~\n2\n~~~";
+assert.equal(
+  withBlockIds(two, assistant, new Map([[two, [3, 4]]])),
+  "`code block 3`\n```a\n1\n```\n\n`code block 4`\n~~~\n2\n~~~",
+);
+
+// The map is keyed by the trimmed text, which is what the renderer hands over.
+const padded = `\n\n${two}\n\n`;
+assert.equal(withBlockIds(padded, assistant, new Map([[two, [3, 4]]])).split("\n")[0], "`code block 3`");
+
+// Unknown text (still streaming, or a message that never made it into the scan).
+assert.equal(withBlockIds(md, assistant, new Map()), md);
+
+// Thinking and user blocks never show ids, even if their text is in the map.
+assert.equal(withBlockIds(md, thinking, new Map([[md.trim(), [7]]])), md);
+assert.equal(withBlockIds(md, user, new Map([[md.trim(), [7]]])), md);
+
+// A count mismatch must leave the markdown alone rather than mislabel a block.
+assert.equal(withBlockIds(two, assistant, new Map([[two, [3]]])), two);
+assert.equal(withBlockIds(two, assistant, new Map([[two, [3, 4, 5]]])), two);
+
+// CRLF is normalized, and the fence lines are still located correctly. The map is keyed
+// by the raw trimmed text (with its \r), which is what both sides see.
+const crlf = "```ts\r\nconst a = 1;\r\n```";
+assert.equal(
+  withBlockIds(crlf, assistant, new Map([[crlf.trim(), [9]]])),
+  "`code block 9`\n```ts\nconst a = 1;\n```",
+);
+
+// Empty input and markdown with no fences.
+assert.equal(withBlockIds("", assistant, new Map([["", [1]]])), "");
+assert.equal(withBlockIds("prose", assistant, new Map([["prose", []]])), "prose");
+
+console.log("gutter.test.ts: ok");
