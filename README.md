@@ -8,6 +8,7 @@ Small extensions for everyday pi sessions.
 | [`tools`](extensions/tools.ts) | `/tools` | 0 | Show which tools are declared to the model (`✓`) and which are registered but inactive (`·`) |
 | [`copy-code`](copy-code/README.md) | `/copy-code`, `alt+c` | 0 | Copy the raw source of an earlier code block, without TUI re-wrapping |
 | [`deepseek-search`](extensions/deepseek-search.ts) | `web_search` | tool schema | Web search through the DeepSeek Search API |
+| [`cerberus`](extensions/cerberus.ts) | `bash`, `cerberus` | prompt section | Gate suspected long commands with a one-question choice: run in the foreground or the background |
 
 ## Install
 
@@ -62,6 +63,46 @@ A single `web_search` tool backed by the DeepSeek Search API, auth from pi's
 credential store. It replaces multi-tool web packages that keep several schemas
 resident. Set a key with `/login deepseek`.
 
+### cerberus
+
+A gate in front of `bash`: ordinary commands pass through byte-for-byte, and a
+small conservative rule table (package builds/tests, `sleep` >= 15s, `tail -f`,
+`docker build`, `git push`, ...) catches only commands that look likely to block.
+When one is caught, nothing runs: the command bytes are saved and the tool result
+asks one question with two short answers.
+
+- `cerberus fg <id>` - run it now in the foreground, streaming output and passing
+  the exit code through. This is the "yes".
+- `cerberus bg <id>` - run it in the background, output in the task log. This is
+  the "no".
+
+A `timeout` given to bash is a budget for the foreground run, not an exemption
+from the question: a long command with `timeout: 600` is still caught. When the
+gate lets the call through, the value is kept unchanged. The shell's `timeout`
+wrapper is unwrapped the same way, so `timeout 600 npm run build` is still
+caught. `nohup`/`setsid` without `&` also still block the foreground shell and
+are gated; `setsid --fork` is the exception. A background task has no deadline by
+default; pass `cerberus bg <id> --timeout N` to set one, or use
+`cerberus stop <id>`.
+
+Resending the identical command is also accepted as "yes". The session remembers
+the answer for each `(cwd, command)`, so the same command is not asked again; a
+remembered "bg" makes the gate start the task itself and reply with its handle.
+`cerberus reap --decisions` clears that memory. A task can run only once: after
+`fg`, `bg`, or a resend, the old id is consumed and further `fg`/`bg` calls are
+rejected.
+
+Background progress: `cerberus log [<id>]` (output), `cerberus rc [<id>]` (exit
+code, or `running` while empty), `cerberus wait [<id>]` (wait up to 60s without
+killing the task), `cerberus ls` (tasks), `cerberus stop <id>`. When `log`, `rc`
+or `wait` omit the id, they use this session's most recent task and echo the id
+they picked (`[cerberus] id=... (most recent)`). A result starting with
+`[cerberus] background` means the task started successfully. Tasks are reaped
+when the TUI session shuts down; in `pi -p` / `--json` mode nothing is reaped,
+because the process is ending and no one would read the output. Those tasks run
+to completion and can be inspected with `cerberus ls` or cleaned later with
+`cerberus reap --all-stale`.
+
 ## Test
 
 ```bash
@@ -69,6 +110,11 @@ node copy-code/test/fences.test.ts
 node copy-code/test/candidates.test.ts
 node copy-code/test/run.test.ts
 node copy-code/test/gutter.test.ts
+node cerberus/test/paths.test.ts
+node cerberus/test/rules.test.ts
+node cerberus/test/cli.test.ts
+node cerberus/test/e2e.test.ts
+node extensions/cerberus/test/hook.test.ts
 ```
 
 ## License

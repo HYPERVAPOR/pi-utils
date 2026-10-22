@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+import { main } from "../cerberus/cli.ts";
+// Let the event loop drain (fg streams to stdout) while preserving the exit code.
+process.exitCode = await main(process.argv.slice(2));

@@ -27,7 +27,11 @@
       "./extensions/keepctx.ts",
       "./extensions/tools.ts",
       "./extensions/copy-code.ts",
-      "./extensions/deepseek-search.ts"
+      "./extensions/deepseek-search.ts",
+      "./extensions/cerberus.ts"
     ]
+  },
+  "bin": {
+    "cerberus": "./bin/cerberus"
   }
 }

@@ -1,0 +1,376 @@
+/**
+ * "Does this command look long-running?" - the gate's only question.
+ *
+ * The table is deliberately small and conservative: a miss is harmless (the command
+ * runs in the foreground exactly as before), while a false positive costs the model
+ * an extra turn. Rules look at one simple command's argv[0] and flags, never at a
+ * regex over the whole string, so `echo "sleep 600"` cannot trigger them.
+ *
+ * Wrappers that merely prefix another command (`sudo`, `env`, `nice`, `nohup`,
+ * `timeout`, ...) are unwrapped first, and `bash -c '<script>'` / `eval '<script>'`
+ * are re-parsed recursively. `timeout N cmd` is a wrapper, not an exemption: the
+ * inner command still decides. A script file passed to bash is not read: a miss is
+ * preferred.
+ */
+
+export interface SimpleCommand {
+  argv: string[];
+  /** true when the command was terminated by a single `&` */
+  background: boolean;
+}
+
+const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
+/** Leading shell syntax that is not part of the command that follows it. */
+export const SHELL_KEYWORDS = new Set([
+  "if", "then", "else", "elif", "fi", "while", "until", "do", "done", "!", "{",
+]);
+const WRAPPERS = new Set([
+  "sudo", "env", "command", "time", "nice", "stdbuf", "nohup", "setsid", "exec", "xargs",
+  "timeout",
+]);
+
+/** Options of wrapper commands that consume the following argument. */
+const WRAPPER_VALUE_FLAGS: Record<string, Set<string>> = {
+  sudo: new Set([
+    "-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "--close-from",
+    "-D", "--chdir", "-r", "--role", "-t", "--type", "-T", "--command-timeout",
+    "-U", "--other-user",
+  ]),
+  env: new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]),
+  nice: new Set(["-n", "--adjustment"]),
+  stdbuf: new Set(["-i", "-o", "-e", "--input", "--output", "--error"]),
+  time: new Set(["-o", "--output", "-f", "--format"]),
+  timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+  xargs: new Set([
+    "-a", "--arg-file", "-d", "--delimiter", "-E", "--eof", "-I", "--replace",
+    "-L", "--max-lines", "-n", "--max-args", "-P", "--max-procs", "-s", "--max-chars",
+  ]),
+  exec: new Set(["-a"]),
+};
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * Split a shell line into simple commands on unquoted `;`, `&&`, `||`, `|`, `&`,
+ * newlines and grouping parentheses. Quotes and backslash escapes are honoured,
+ * and `>&` redirections are not mistaken for a background `&`.
+ */
+export function splitCommands(input: string): SimpleCommand[] {
+  const commands: SimpleCommand[] = [];
+  let argv: string[] = [];
+  let token = "";
+  let started = false;
+  let quote: "'" | '"' | undefined;
+
+  const pushToken = () => {
+    if (started) {
+      argv.push(token);
+      token = "";
+      started = false;
+    }
+  };
+  const end = (background: boolean) => {
+    pushToken();
+    if (argv.length > 0) commands.push({ argv, background });
+    argv = [];
+    started = false;
+  };
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else if (char === "\\" && quote === '"' && i + 1 < input.length) token += input[++i];
+      else token += char;
+      continue;
+    }
+    if (char === "\\") {
+      started = true;
+      if (i + 1 < input.length) token += input[++i];
+      else token += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+      continue;
+    }
+    if (char === " " || char === "\t" || char === "\r" || char === "(" || char === ")") {
+      pushToken();
+      continue;
+    }
+    if (char === "\n" || char === ";") {
+      end(false);
+      continue;
+    }
+    if (char === "&") {
+      if (input[i + 1] === "&") {
+        end(false);
+        i++;
+      } else if (token.endsWith(">") || input[i + 1] === ">") {
+        // `2>&1`, `&>file`: part of a redirection, not a background operator.
+        token += char;
+        started = true;
+      } else {
+        end(true);
+      }
+      continue;
+    }
+    if (char === "|") {
+      end(false);
+      if (input[i + 1] === "|") i++;
+      continue;
+    }
+    if (char === "#" && !started) {
+      while (i + 1 < input.length && input[i + 1] !== "\n") i++;
+      continue;
+    }
+    token += char;
+    started = true;
+  }
+  end(false);
+  return commands;
+}
+
+function basename(path: string): string {
+  const parts = path.split("/");
+  return parts[parts.length - 1] || path;
+}
+
+interface Unwrapped {
+  target: string[];
+  /** true when a `setsid --fork`/`-f` prefix detaches before the command runs */
+  forks: boolean;
+}
+
+/**
+ * Drop assignments, shell keywords and prefix wrappers so `target[0]` is the
+ * command that actually decides how long this simple command takes.
+ */
+function unwrap(argv: string[]): Unwrapped {
+  let i = 0;
+  let forks = false;
+  for (;;) {
+    while (i < argv.length && (ASSIGNMENT.test(argv[i]) || SHELL_KEYWORDS.has(argv[i]))) i++;
+    if (i >= argv.length) break;
+    const exec = basename(argv[i]);
+    if (!WRAPPERS.has(exec)) break;
+    if (exec === "setsid") {
+      for (let j = i + 1; j < argv.length && argv[j].startsWith("-"); j++) {
+        const arg = argv[j];
+        if (arg === "--fork" || (!arg.startsWith("--") && arg.slice(1).includes("f"))) forks = true;
+      }
+    }
+    i++;
+    const valueFlags = WRAPPER_VALUE_FLAGS[exec];
+    while (i < argv.length) {
+      const arg = argv[i];
+      if (ASSIGNMENT.test(arg)) {
+        i++;
+        continue;
+      }
+      if (arg === "--") {
+        i++;
+        break;
+      }
+      if (arg.startsWith("-")) {
+        const eq = arg.indexOf("=");
+        const name = eq > 0 ? arg.slice(0, eq) : arg;
+        i += valueFlags?.has(name) && eq < 0 ? 2 : 1;
+        continue;
+      }
+      break;
+    }
+    // `timeout <duration> <command>`: the duration is not the command.
+    if (exec === "timeout" && i < argv.length && !argv[i].startsWith("-")) i++;
+  }
+  return { target: argv.slice(i), forks };
+}
+
+function firstNonFlag(args: string[], from = 1): string | undefined {
+  for (let i = from; i < args.length; i++) {
+    if (!args[i].startsWith("-")) return args[i];
+  }
+  return undefined;
+}
+
+function hasShortFlag(args: string[], letters: string): boolean {
+  return args.some((arg) => arg.startsWith("-") && !arg.startsWith("--") && [...letters].some((l) => arg.includes(l)));
+}
+
+function hasAnyFlag(args: string[], names: string[]): boolean {
+  return args.some((arg) => names.some((name) => arg === name || arg.startsWith(`${name}=`)));
+}
+
+function parseSleepSeconds(value: string | undefined): number | undefined {
+  if (value === "infinity") return Infinity;
+  const match = /^(\d+(?:\.\d+)?)([smhd]?)$/.exec(value ?? "");
+  if (!match) return undefined;
+  const factor = { s: 1, m: 60, h: 3600, d: 86400 }[match[2] || "s"] ?? 1;
+  return Number(match[1]) * factor;
+}
+
+function sleepIsLong(args: string[]): boolean {
+  let total = 0;
+  for (const arg of args.slice(1)) {
+    if (arg.startsWith("-")) continue;
+    const seconds = parseSleepSeconds(arg);
+    if (seconds === undefined) continue;
+    if (!Number.isFinite(seconds)) return true;
+    total += seconds;
+  }
+  return total >= 15;
+}
+
+const PACKAGE_SUBCOMMANDS = new Set(["install", "ci", "build", "test", "start", "dev"]);
+
+function packageManagerIsLong(args: string[]): boolean {
+  const sub = firstNonFlag(args);
+  if (sub === undefined) return false;
+  if (PACKAGE_SUBCOMMANDS.has(sub)) return true;
+  if (sub === "run") {
+    const scriptIndex = args.indexOf("run");
+    return firstNonFlag(args, scriptIndex + 1) !== undefined;
+  }
+  return false;
+}
+
+function hasSubcommand(args: string[], allowed: Set<string>): boolean {
+  const sub = firstNonFlag(args);
+  return sub !== undefined && allowed.has(sub);
+}
+
+function pipIsLong(args: string[]): boolean {
+  return firstNonFlag(args) === "install";
+}
+
+function uvIsLong(args: string[]): boolean {
+  const sub = firstNonFlag(args);
+  if (sub === "install") return true;
+  if (sub === "pip") {
+    const after = args.indexOf("pip");
+    return firstNonFlag(args, after + 1) === "install";
+  }
+  return false;
+}
+
+function sshHasRemoteCommand(args: string[]): boolean {
+  // Options that take a value; without this `ssh -p 22 host` would look remote.
+  const valueFlags = new Set([
+    "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l",
+    "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w",
+  ]);
+  let i = 1;
+  while (i < args.length && args[i].startsWith("-")) {
+    i += valueFlags.has(args[i]) ? 2 : 1;
+  }
+  if (i >= args.length) return false;
+  return i + 1 < args.length;
+}
+
+/** `bash -c '<script>'` / `bash -lc '<script>'` -> the script argument. */
+function shellScriptArg(args: string[]): string | undefined {
+  // Only options before the script name can be `-c`; `bash script.sh -c ...`
+  // passes `-c` to the script, not to bash.
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--" || !arg.startsWith("-")) return undefined;
+    const cluster = arg.startsWith("--") ? "" : arg.slice(1);
+    if (cluster.includes("c")) return args[i + 1];
+  }
+  return undefined;
+}
+
+function isLongCommand(argv: string[]): boolean {
+  if (argv.length === 0) return false;
+  const exec = basename(argv[0]);
+  const args = argv;
+
+  switch (exec) {
+    case "sleep":
+      return sleepIsLong(args);
+    case "tail":
+      return hasShortFlag(args, "fF") || hasAnyFlag(args, ["--follow"]);
+    case "journalctl":
+      return hasShortFlag(args, "f") || hasAnyFlag(args, ["--follow"]);
+    case "watch":
+      return true;
+    case "ping":
+      return !hasShortFlag(args, "c") && !hasAnyFlag(args, ["--count"]);
+    case "npm":
+    case "yarn":
+    case "pnpm":
+    case "bun":
+      return packageManagerIsLong(args);
+    case "cargo":
+      return hasSubcommand(args, new Set(["build", "test", "run", "watch"]));
+    case "go":
+      return hasSubcommand(args, new Set(["build", "test", "run"]));
+    case "make":
+      return !hasAnyFlag(args, ["--version", "--help"]);
+    case "cmake":
+      return hasAnyFlag(args, ["--build"]);
+    case "pytest":
+      return true;
+    case "jest":
+    case "vitest":
+    case "playwright":
+      return true;
+    case "docker":
+      return hasSubcommand(args, new Set(["build", "run", "compose"]));
+    case "kubectl":
+      return hasSubcommand(args, new Set(["wait", "rollout"]));
+    case "git":
+      return hasSubcommand(args, new Set(["clone", "fetch", "pull", "push", "lfs"]));
+    case "pip":
+    case "pip3":
+      return pipIsLong(args);
+    case "poetry":
+      return firstNonFlag(args) === "install";
+    case "uv":
+      return uvIsLong(args);
+    case "mvn":
+    case "gradle":
+    case "gradlew":
+      return firstNonFlag(args) !== undefined;
+    case "rsync":
+    case "scp":
+      return true;
+    case "ssh":
+      return sshHasRemoteCommand(args);
+    case "terraform":
+      return firstNonFlag(args) === "apply";
+    default:
+      return false;
+  }
+}
+
+const MAX_DEPTH = 3;
+
+function lineNeedsLongRun(command: string, depth: number): boolean {
+  for (const simple of splitCommands(command)) {
+    if (simple.background) continue;
+    const { target } = unwrap(simple.argv);
+    if (target.length === 0) continue;
+    const exec = basename(target[0]);
+
+    if (SHELLS.has(exec) || exec === "eval") {
+      if (depth >= MAX_DEPTH) continue;
+      const script = exec === "eval" ? target.slice(1).join(" ") : shellScriptArg(target);
+      if (script !== undefined && lineNeedsLongRun(script, depth + 1)) return true;
+      continue;
+    }
+    if (isLongCommand(target)) return true;
+  }
+  return false;
+}
+
+/** True when any simple command in the line (including `-c` bodies) is on the list. */
+export function needsLongRun(command: string): boolean {
+  return lineNeedsLongRun(command, 0);
+}
+
+/** True when the line detaches itself: `&` or `setsid --fork`/`-f`. */
+export function isBackgrounded(command: string): boolean {
+  return splitCommands(command).some((simple) => simple.background || unwrap(simple.argv).forks);
+}
