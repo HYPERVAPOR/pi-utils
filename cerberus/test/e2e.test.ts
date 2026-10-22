@@ -43,6 +43,8 @@ const fakePi = {
   },
 };
 const extension = await import("../../extensions/cerberus.ts");
+/** How the extension prints the CLI: bare when a matching shim is on PATH. */
+const shown = extension.SHOWN_BIN;
 (extension.default as (pi: unknown) => void)(fakePi);
 
 assert.equal(typeof handlers.tool_call, "function");
@@ -308,9 +310,9 @@ try {
       reason,
       [
         "Cerberus: this may block for a long time. Nothing has run yet. Answer by running exactly one:",
-        `  ${BIN} fg <id>   -> I must wait: run it in the foreground and return the output`,
-        `  ${BIN} bg <id>   -> I do not need it now: run it in the background, I will check later`,
-        `  (background has no deadline; stop it with ${BIN} stop <id>)`,
+        `  ${shown} fg <id>   -> I must wait: run it in the foreground and return the output`,
+        `  ${shown} bg <id>   -> I do not need it now: run it in the background, I will check later`,
+        `  (background has no deadline; stop it with ${shown} stop <id>)`,
         "Do not answer in prose.",
       ]
         .join("\n")
@@ -323,8 +325,8 @@ try {
     assert.equal(event.input.command, command, "a blocked call keeps its command");
 
     const id = idOf(reason);
-    assert.ok(reason.includes(`${BIN} fg ${id}`), reason);
-    assert.ok(reason.includes(`${BIN} bg ${id}`), reason);
+    assert.ok(reason.includes(`${shown} fg ${id}`), reason);
+    assert.ok(reason.includes(`${shown} bg ${id}`), reason);
     assert.ok(BIN.startsWith("/"), "the question carries the absolute BIN");
     assert.match(id, new RegExp(`^${cmdHash(command)}-[0-9a-f]{4}-1$`), id);
 
@@ -431,9 +433,9 @@ try {
     assert.notEqual(secondId, firstId);
     assert.equal(started[2], join(taskDir(bgOwner, secondId), "out.log"));
     assert.equal(started[3], join(taskDir(bgOwner, secondId), "rc"));
-    assert.ok(reason.includes(`'${BIN}' log ${secondId}`), reason);
-    assert.ok(reason.includes(`'${BIN}' rc ${secondId}`), reason);
-    assert.ok(reason.includes(`'${BIN}' wait ${secondId}`), reason);
+    assert.ok(reason.includes(`${shown} log ${secondId}`), reason);
+    assert.ok(reason.includes(`${shown} rc ${secondId}`), reason);
+    assert.ok(reason.includes(`${shown} wait ${secondId}`), reason);
     assert.equal(await waitForRc(taskDir(bgOwner, secondId)), 0);
     assert.equal(runs(), before + 2, "the gate-spawned task ran exactly once");
     assert.equal(readMeta(taskDir(bgOwner, secondId))?.state, "finished");
@@ -510,7 +512,7 @@ try {
 
     assert.equal(result?.block, true);
     const reason = result?.reason ?? "";
-    const match = new RegExp(`^  ${escapeRegExp(BIN)} bg (\\S+) {3}->`, "m").exec(reason);
+    const match = new RegExp(`^  ${escapeRegExp(shown)} bg (\\S+) {3}->`, "m").exec(reason);
     assert.ok(match, reason);
     liveTaskId = match[1];
     assert.equal(event.input.command, command, "blocked call keeps its bytes");

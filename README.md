@@ -67,10 +67,16 @@ resident. Set a key with `/login deepseek`.
 
 Hints print a bare `cerberus` when a shim is on PATH, and the absolute path of the
 package otherwise: an install path costs ~66 characters per mention and appears nine
-times in the prompt alone. Install the shim with `cerberus shim` (default: pi's own
-`~/.pi/agent/bin`, then `~/.local/bin`; `--dir <dir>` and `--remove` override). A
-`cerberus` on PATH is trusted only when it resolves to the very file the extension was
-loaded from, so a dev checkout and the installed package never drive each other.
+times in the prompt alone. `pi install` runs `npm install` in the clone, so the
+`postinstall` script links the CLI automatically (first writable directory on PATH of
+`$PI_BIN_DIR`, `~/.pi/agent/bin`, `~/.local/bin`); otherwise run `cerberus shim`
+yourself (`--dir <dir>`, `--remove`, `--quiet`). A `cerberus` on PATH is trusted only
+when it resolves to the very file the extension was loaded from, so a dev checkout
+and the installed package never drive each other.
+
+The shim is created on install, not on `pi update`: updating only fetches the clone,
+it runs no scripts. `-e` users (a checkout or a profile) never install, so they need
+`cerberus shim` once.
 
 A gate in front of `bash`: ordinary commands pass through byte-for-byte, and a
 small conservative rule table (package builds/tests, `sleep` >= 15s, `tail -f`,

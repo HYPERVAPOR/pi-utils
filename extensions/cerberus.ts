@@ -67,25 +67,26 @@ function resolveBin(): string {
   return LOCAL_BIN;
 }
 
-const BIN = resolveBin();
+/** Resolved CLI for this process; exported so tests assert the same text pi shows. */
+export const BIN = resolveBin();
 /** Only a path needs quoting; a bare `cerberus` would only gain noise. */
-const QUOTED_BIN = BIN === "cerberus" ? BIN : shellQuote(BIN);
+export const SHOWN_BIN = BIN === "cerberus" ? BIN : shellQuote(BIN);
 
 const GUIDELINE =
-  `A bash command intercepted by cerberus has not run yet: answer with \`${QUOTED_BIN} fg <id>\` to wait for it or \`${QUOTED_BIN} bg <id>\` to run it in the background.`;
+  `A bash command intercepted by cerberus has not run yet: answer with \`${SHOWN_BIN} fg <id>\` to wait for it or \`${SHOWN_BIN} bg <id>\` to run it in the background.`;
 
 /** Static on purpose: any per-run content would invalidate the prompt cache. */
 const PROMPT = [
   "Some bash commands are intercepted before they run because they look long-running. Nothing has executed when that happens.",
   "",
-  `- Wait for the result: run \`${QUOTED_BIN} fg <id>\`.`,
-  `- Run it in the background: run \`${QUOTED_BIN} bg <id>\`.`,
+  `- Wait for the result: run \`${SHOWN_BIN} fg <id>\`.`,
+  `- Run it in the background: run \`${SHOWN_BIN} bg <id>\`.`,
   "- Resending the identical command is also accepted as `fg`.",
-  `- Check a background task with \`${QUOTED_BIN} log <id>\` (output) and \`${QUOTED_BIN} rc <id>\` (exit code, or \`running\`).`,
-  `- \`${QUOTED_BIN} wait <id>\` blocks up to 60s; \`${QUOTED_BIN} ls\` lists tasks; \`${QUOTED_BIN} stop <id>\` stops one.`,
+  `- Check a background task with \`${SHOWN_BIN} log <id>\` (output) and \`${SHOWN_BIN} rc <id>\` (exit code, or \`running\`).`,
+  `- \`${SHOWN_BIN} wait <id>\` blocks up to 60s; \`${SHOWN_BIN} ls\` lists tasks; \`${SHOWN_BIN} stop <id>\` stops one.`,
   "- For `log`, `rc` or `wait`, omit `<id>` to use the most recent task; the output echoes the chosen id.",
   "- A `timeout` on the bash call does not skip this choice; it only bounds the foreground run.",
-  `- Background tasks have no deadline unless you pass \`${QUOTED_BIN} bg <id> --timeout N\`; otherwise stop one with \`${QUOTED_BIN} stop <id>\`.`,
+  `- Background tasks have no deadline unless you pass \`${SHOWN_BIN} bg <id> --timeout N\`; otherwise stop one with \`${SHOWN_BIN} stop <id>\`.`,
   "- A result beginning with `[cerberus] background` is a successful background start, not an error.",
 ].join("\n");
 
@@ -168,10 +169,10 @@ function expandCerberusPrefix(command: string): string | undefined {
     }
     if (expectCommand) {
       if (word === "cerberus" || word === BIN) {
-        output += command.slice(cursor, i) + QUOTED_BIN;
+        output += command.slice(cursor, i) + SHOWN_BIN;
         cursor = end;
         found = true;
-      } else if (word === QUOTED_BIN) {
+      } else if (word === SHOWN_BIN) {
         found = true; // already runnable, but still a cerberus command
       }
       expectCommand = false;
@@ -216,16 +217,16 @@ function startStaged(staged: Staged): { id: string; log: string; rc: string } | 
 function startedNote(started: { id: string; log: string; rc: string }): string {
   return [
     `[cerberus] background id=${started.id} log=${started.log} rc=${started.rc}`,
-    `Check it with \`${QUOTED_BIN} log ${started.id}\`, \`${QUOTED_BIN} rc ${started.id}\` or \`${QUOTED_BIN} wait ${started.id}\`.`,
+    `Check it with \`${SHOWN_BIN} log ${started.id}\`, \`${SHOWN_BIN} rc ${started.id}\` or \`${SHOWN_BIN} wait ${started.id}\`.`,
   ].join("\n");
 }
 
 function question(id: string): string {
   return [
     "Cerberus: this may block for a long time. Nothing has run yet. Answer by running exactly one:",
-    `  ${QUOTED_BIN} fg ${id}   -> I must wait: run it in the foreground and return the output`,
-    `  ${QUOTED_BIN} bg ${id}   -> I do not need it now: run it in the background, I will check later`,
-    `  (background has no deadline; stop it with ${QUOTED_BIN} stop ${id})`,
+    `  ${SHOWN_BIN} fg ${id}   -> I must wait: run it in the foreground and return the output`,
+    `  ${SHOWN_BIN} bg ${id}   -> I do not need it now: run it in the background, I will check later`,
+    `  (background has no deadline; stop it with ${SHOWN_BIN} stop ${id})`,
     "Do not answer in prose.",
   ].join("\n");
 }

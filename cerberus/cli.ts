@@ -63,7 +63,7 @@ export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap|shim> ...
   rc [<id>]
   stop <id> [--force]
   reap [--owner <sid> | --all-stale] [--decisions] [--quiet] [--json]
-  shim [--dir <dir>] [--remove]   link this CLI into a directory on PATH
+  shim [--dir <dir>] [--remove] [--quiet]   link this CLI into a directory on PATH
 
 With no <id>, log/rc/wait use the most recent task of the current owner.
 `;
@@ -577,8 +577,10 @@ function isLinkTo(path: string, target: string): boolean {
 
 /**
  * Put a `cerberus` symlink on PATH, so prompts and tool results can show the short
- * name instead of an absolute install path. Nothing depends on it: without a shim
- * the extension prints the absolute path of the package it was loaded from.
+ * name instead of an absolute install path. `npm install` runs this with --quiet
+ * (see the postinstall script), so a `pi install git:...` sets it up without a
+ * second step. Nothing depends on it: without a shim the extension prints the
+ * absolute path of the package it was loaded from.
  */
 export function shimCommand(args: Args, io: Io = stdIo): number {
   const self = realpathSync(CLI_PATH);
@@ -613,7 +615,7 @@ export function shimCommand(args: Args, io: Io = stdIo): number {
 
   const target = link(dir);
   if (isLinkTo(target, self)) {
-    io.out(`[cerberus] shim already present: ${target}\n`);
+    if (!args.bools.has("quiet")) io.out(`[cerberus] shim already present: ${target}\n`);
     return 0;
   }
   // Only ever replace our own symlink; a real file there belongs to someone else.
@@ -623,6 +625,7 @@ export function shimCommand(args: Args, io: Io = stdIo): number {
     return 1;
   }
   symlinkSync(self, target);
+  if (args.bools.has("quiet")) return 0;
   io.out(`[cerberus] shim -> ${target}${onPath(dir) ? "" : ` (warning: ${dir} is not on PATH)`}\n`);
   return 0;
 }
