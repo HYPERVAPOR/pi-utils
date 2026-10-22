@@ -4,8 +4,11 @@
  * Every exported command takes an `Io` so tests can capture text without spawning
  * a process; `main(argv)` is the only thing bin/cerberus needs.
  */
-import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { accessSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { constants } from "node:os";
+import { homedir } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   cleanup,
   clearDecisions,
@@ -33,6 +36,10 @@ import {
 
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
+/** This package's own bin shim: cerberus/cli.ts -> <package>/bin/cerberus. */
+const CLI_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "cerberus");
+const SHIM_NAME = "cerberus";
+
 export const DEFAULT_WAIT_FOR = 60;
 export const MAX_WAIT_FOR = 300;
 
@@ -46,7 +53,7 @@ export const stdIo: Io = {
   err: (text) => process.stderr.write(text),
 };
 
-export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap> ...
+export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap|shim> ...
 
   bg <id> [--timeout <sec>]  start a staged task in the background
   fg <id> [--timeout <sec>]  run a staged task in the foreground
@@ -56,11 +63,12 @@ export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap> ...
   rc [<id>]
   stop <id> [--force]
   reap [--owner <sid> | --all-stale] [--decisions] [--quiet] [--json]
+  shim [--dir <dir>] [--remove]   link this CLI into a directory on PATH
 
 With no <id>, log/rc/wait use the most recent task of the current owner.
 `;
 
-const VALUE_FLAGS = new Set(["owner", "for", "timeout", "n"]);
+const VALUE_FLAGS = new Set(["owner", "for", "timeout", "n", "dir"]);
 
 export interface Args {
   values: Record<string, string>;
@@ -526,6 +534,99 @@ export async function reapCommand(args: Args, io: Io = stdIo): Promise<number> {
   return 0;
 }
 
+/**
+ * Directories that are usually already on PATH, most specific first: pi's own bin
+ * (where its launcher lives), then the conventional user bin.
+ */
+function shimDirs(): string[] {
+  const dirs = [process.env.PI_BIN_DIR, join(homedir(), ".pi", "agent", "bin"), join(homedir(), ".local", "bin")];
+  return [...new Set(dirs.filter((dir): dir is string => typeof dir === "string" && dir.length > 0).map((d) => resolve(d)))];
+}
+
+function onPath(dir: string): boolean {
+  const real = resolve(dir);
+  return (process.env.PATH ?? "").split(delimiter).some((entry) => entry !== "" && resolve(entry) === real);
+}
+
+function writableDir(dir: string): boolean {
+  try {
+    if (!statSync(dir).isDirectory()) return false;
+    accessSync(dir, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** True when `path` is a symlink that resolves to `target`. */
+function isLinkTo(path: string, target: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink() && realpathSync(path) === target;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Put a `cerberus` symlink on PATH, so prompts and tool results can show the short
+ * name instead of an absolute install path. Nothing depends on it: without a shim
+ * the extension prints the absolute path of the package it was loaded from.
+ */
+export function shimCommand(args: Args, io: Io = stdIo): number {
+  const self = realpathSync(CLI_PATH);
+  const link = (dir: string) => join(dir, SHIM_NAME);
+  const explicit = args.values.dir ? resolve(args.values.dir) : undefined;
+
+  if (args.bools.has("remove")) {
+    const dir = explicit ?? shimDirs().find((candidate) => isLinkTo(link(candidate), self));
+    if (!dir) {
+      io.err(`[cerberus] shim: no ${SHIM_NAME} link of this package found\n`);
+      return 1;
+    }
+    try {
+      rmSync(link(dir));
+    } catch (err) {
+      io.err(`[cerberus] shim: ${(err as Error).message}\n`);
+      return 1;
+    }
+    io.out(`[cerberus] shim removed: ${link(dir)}\n`);
+    return 0;
+  }
+
+  const dir = explicit ?? shimDirs().find((d) => writableDir(d) && onPath(d)) ?? shimDirs().find(writableDir);
+  if (!dir) {
+    io.err(`[cerberus] shim: no writable directory; pass --dir <dir> (tried ${shimDirs().join(", ")})\n`);
+    return 1;
+  }
+  if (!writableDir(dir)) {
+    io.err(`[cerberus] shim: ${dir} is not a writable directory\n`);
+    return 1;
+  }
+
+  const target = link(dir);
+  if (isLinkTo(target, self)) {
+    io.out(`[cerberus] shim already present: ${target}\n`);
+    return 0;
+  }
+  // Only ever replace our own symlink; a real file there belongs to someone else.
+  if (isSymlink(target)) rmSync(target);
+  else if (lstatSync(target, { throwIfNoEntry: false }) !== undefined) {
+    io.err(`[cerberus] shim: ${target} exists and is not a symlink; leaving it alone\n`);
+    return 1;
+  }
+  symlinkSync(self, target);
+  io.out(`[cerberus] shim -> ${target}${onPath(dir) ? "" : ` (warning: ${dir} is not on PATH)`}\n`);
+  return 0;
+}
+
 export async function main(argv: string[]): Promise<number> {
   try {
     cleanup();
@@ -561,6 +662,8 @@ export async function main(argv: string[]): Promise<number> {
         return await stopCommand(args);
       case "reap":
         return await reapCommand(args);
+      case "shim":
+        return shimCommand(args);
       case "help":
       case "-h":
       case "--help":

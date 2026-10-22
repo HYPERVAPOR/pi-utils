@@ -16,8 +16,8 @@
  * by resending the identical command is still accepted as `fg`.
  */
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { realpathSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -34,24 +34,58 @@ import {
 import { isBackgrounded, needsLongRun, SHELL_KEYWORDS } from "../cerberus/rules.ts";
 import { startBackground } from "../cerberus/runner.ts";
 
-/** Absolute path, never PATH lookup: the rewritten command has no shell setup. */
-const BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "cerberus");
+/** This package's own CLI, whatever directory the package happens to live in. */
+const LOCAL_BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "cerberus");
+
+/**
+ * The name to print in the prompt and the tool result.
+ *
+ * A bare `cerberus` keeps every hint short; an absolute path costs ~66 characters per
+ * mention, nine times in the prompt alone. PATH is only trusted when it resolves to
+ * this very file: a second install (dev checkout next to the package) must never be
+ * driven by the extension that is actually loaded. Create the shim with
+ * `cerberus shim`; without one this falls back to the absolute path.
+ */
+function resolveBin(): string {
+  const name = "cerberus";
+  const path = process.env.PATH;
+  if (!path) return LOCAL_BIN;
+  let self: string;
+  try {
+    self = realpathSync(LOCAL_BIN);
+  } catch {
+    return LOCAL_BIN;
+  }
+  for (const dir of path.split(delimiter)) {
+    if (!dir) continue;
+    try {
+      if (realpathSync(join(dir, name)) === self) return name;
+    } catch {
+      // not in this directory
+    }
+  }
+  return LOCAL_BIN;
+}
+
+const BIN = resolveBin();
+/** Only a path needs quoting; a bare `cerberus` would only gain noise. */
+const QUOTED_BIN = BIN === "cerberus" ? BIN : shellQuote(BIN);
 
 const GUIDELINE =
-  `A bash command intercepted by cerberus has not run yet: answer with \`${shellQuote(BIN)} fg <id>\` to wait for it or \`${shellQuote(BIN)} bg <id>\` to run it in the background.`;
+  `A bash command intercepted by cerberus has not run yet: answer with \`${QUOTED_BIN} fg <id>\` to wait for it or \`${QUOTED_BIN} bg <id>\` to run it in the background.`;
 
 /** Static on purpose: any per-run content would invalidate the prompt cache. */
 const PROMPT = [
   "Some bash commands are intercepted before they run because they look long-running. Nothing has executed when that happens.",
   "",
-  `- Wait for the result: run \`${shellQuote(BIN)} fg <id>\`.`,
-  `- Run it in the background: run \`${shellQuote(BIN)} bg <id>\`.`,
+  `- Wait for the result: run \`${QUOTED_BIN} fg <id>\`.`,
+  `- Run it in the background: run \`${QUOTED_BIN} bg <id>\`.`,
   "- Resending the identical command is also accepted as `fg`.",
-  `- Check a background task with \`${shellQuote(BIN)} log <id>\` (output) and \`${shellQuote(BIN)} rc <id>\` (exit code, or \`running\`).`,
-  `- \`${shellQuote(BIN)} wait <id>\` blocks up to 60s; \`${shellQuote(BIN)} ls\` lists tasks; \`${shellQuote(BIN)} stop <id>\` stops one.`,
+  `- Check a background task with \`${QUOTED_BIN} log <id>\` (output) and \`${QUOTED_BIN} rc <id>\` (exit code, or \`running\`).`,
+  `- \`${QUOTED_BIN} wait <id>\` blocks up to 60s; \`${QUOTED_BIN} ls\` lists tasks; \`${QUOTED_BIN} stop <id>\` stops one.`,
   "- For `log`, `rc` or `wait`, omit `<id>` to use the most recent task; the output echoes the chosen id.",
   "- A `timeout` on the bash call does not skip this choice; it only bounds the foreground run.",
-  `- Background tasks have no deadline unless you pass \`${shellQuote(BIN)} bg <id> --timeout N\`; otherwise stop one with \`${shellQuote(BIN)} stop <id>\`.`,
+  `- Background tasks have no deadline unless you pass \`${QUOTED_BIN} bg <id> --timeout N\`; otherwise stop one with \`${QUOTED_BIN} stop <id>\`.`,
   "- A result beginning with `[cerberus] background` is a successful background start, not an error.",
 ].join("\n");
 
@@ -60,7 +94,6 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-const QUOTED_BIN = shellQuote(BIN);
 const SPACE = /[ \t\r]/;
 const OPERATOR = /[;|&()]/;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -183,16 +216,16 @@ function startStaged(staged: Staged): { id: string; log: string; rc: string } | 
 function startedNote(started: { id: string; log: string; rc: string }): string {
   return [
     `[cerberus] background id=${started.id} log=${started.log} rc=${started.rc}`,
-    `Check it with \`${shellQuote(BIN)} log ${started.id}\`, \`${shellQuote(BIN)} rc ${started.id}\` or \`${shellQuote(BIN)} wait ${started.id}\`.`,
+    `Check it with \`${QUOTED_BIN} log ${started.id}\`, \`${QUOTED_BIN} rc ${started.id}\` or \`${QUOTED_BIN} wait ${started.id}\`.`,
   ].join("\n");
 }
 
 function question(id: string): string {
   return [
     "Cerberus: this may block for a long time. Nothing has run yet. Answer by running exactly one:",
-    `  ${BIN} fg ${id}   -> I must wait: run it in the foreground and return the output`,
-    `  ${BIN} bg ${id}   -> I do not need it now: run it in the background, I will check later`,
-    `  (background has no deadline; stop it with ${BIN} stop ${id})`,
+    `  ${QUOTED_BIN} fg ${id}   -> I must wait: run it in the foreground and return the output`,
+    `  ${QUOTED_BIN} bg ${id}   -> I do not need it now: run it in the background, I will check later`,
+    `  (background has no deadline; stop it with ${QUOTED_BIN} stop ${id})`,
     "Do not answer in prose.",
   ].join("\n");
 }

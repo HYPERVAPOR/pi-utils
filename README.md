@@ -65,6 +65,13 @@ resident. Set a key with `/login deepseek`.
 
 ### cerberus
 
+Hints print a bare `cerberus` when a shim is on PATH, and the absolute path of the
+package otherwise: an install path costs ~66 characters per mention and appears nine
+times in the prompt alone. Install the shim with `cerberus shim` (default: pi's own
+`~/.pi/agent/bin`, then `~/.local/bin`; `--dir <dir>` and `--remove` override). A
+`cerberus` on PATH is trusted only when it resolves to the very file the extension was
+loaded from, so a dev checkout and the installed package never drive each other.
+
 A gate in front of `bash`: ordinary commands pass through byte-for-byte, and a
 small conservative rule table (package builds/tests, `sleep` >= 15s, `tail -f`,
 `docker build`, `git push`, ...) catches only commands that look likely to block.

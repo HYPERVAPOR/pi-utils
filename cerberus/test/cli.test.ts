@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -358,6 +358,27 @@ try {
     const none = cli(["reap", "--decisions", "--owner", owner], owner);
     assert.equal(none.status, 0);
     assert.match(none.stdout, /no decisions to clear/);
+  }
+  // --- shim: link this CLI on PATH, refuse to clobber a real file ---------
+  {
+    const dir = mkdtempSync(join(tmpdir(), "cerberus-shim-"));
+    const target = join(dir, "cerberus");
+
+    const made = cli(["shim", "--dir", dir]);
+    assert.equal(made.status, 0, made.stderr);
+    assert.equal(readlinkSync(target), realpathSync(BIN));
+    assert.match(cli(["shim", "--dir", dir]).stdout, /already present/);
+
+    const removed = cli(["shim", "--dir", dir, "--remove"]);
+    assert.equal(removed.status, 0, removed.stderr);
+    assert.equal(existsSync(target), false);
+
+    writeFileSync(target, "#!/bin/sh\n");
+    const refused = cli(["shim", "--dir", dir]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /not a symlink/);
+    assert.equal(readFileSync(target, "utf8"), "#!/bin/sh\n");
+    rmSync(dir, { recursive: true, force: true });
   }
 } finally {
   for (const task of started) cli(["stop", task.id, "--owner", task.owner, "--force"], task.owner);
