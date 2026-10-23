@@ -1,25 +1,26 @@
 /**
- * cerberus - capture every bash command, or ask before the few that look long.
+ * cerberus - capture every bash command, or stay out of the way.
  *
- * Three modes, per session: picked with `/cerberus on|off|disabled` (or `cerberus mode
- * ...`, `--default` for the machine) and stored in `$XDG_STATE_HOME/cerberus/config.json`,
+ * Two modes, per session: picked with `/cerberus on|off` (or `cerberus mode ...`,
+ * `--default` for the machine) and stored in `$XDG_STATE_HOME/cerberus/config.json`,
  * read once per tool call. A TUI session shows its own in a widget beside the editor
- * (`widget.ts`), which a double click cycles.
+ * (`widget.ts`), which a double click toggles.
  *
  * `capture` (on) - cerberus replaces pi's `bash` tool with the same definition built on
  *   its own operations (`cerberus/capture.ts`). Every command runs under the task
  *   supervisor; whatever finishes inside the budget comes back byte-identically, and a
  *   command that outlives it keeps running while the model gets one line to act on.
  *
- * `gate` (off, the default) - the gate never rewrites an ordinary command. Only when
- *   `rules.ts` flags a command (and the command does not already background itself)
- *   does it stop the call before execution and ask one question with two answers:
+ * `disabled` (off, the default) - cerberus does nothing at all: no capture, no rules,
+ *   no questions, no tasks. The bash tool is pi's own.
+ *
+ * The third mode, `gate`, is retired: `GATE_ENABLED` below turns the whole of it back
+ * on (the question flow, the prompt section, its tests). While it is off, `off` means
+ * inert - a retired gate must never start asking or capturing on its own. The gate code
+ * is all still here:
  *
  *     BIN fg <id>  runs the saved command in the foreground (streamed, exit code)
  *     BIN bg <id>  runs it in the background, output in a log
- *
- * `disabled` - cerberus does nothing at all: no capture, no rules, no questions, no
- * tasks. The bash tool is pi's own.
  *
  * A `timeout` on the bash call is not an exemption: it only bounds the foreground
  * run that pi does after a pass-through. The gate preserves it untouched.
@@ -62,6 +63,16 @@ import {
   type Tui,
 } from "./cerberus/widget.ts";
 import { joinStatusRow, leaveStatusRow } from "./status-row.ts";
+
+/**
+ * The gate is retired for now: `on` captures, `off` does nothing, and no configuration
+ * can reach the "ask before long commands" flow. Flip this to true to bring back the
+ * whole of it - `tool_call` (rules, staging, the question), the prompt section, and the
+ * gate's tests, which are skipped while it is false (`hook`, `e2e`, and the `/cerberus`
+ * switch cases that expect a question). Nothing was deleted: `rules.ts`, `question()`,
+ * the decision memory and `cerberus fg|bg` all still sit behind this one constant.
+ */
+export const GATE_ENABLED = false;
 
 /** This package's own CLI, whatever directory the package happens to live in. */
 const LOCAL_BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "cerberus");
@@ -250,7 +261,7 @@ function startStaged(staged: Staged): { id: string; log: string; rc: string } | 
  * `shownMode` is what the widget renders. It is refreshed on the timer and after
  * `/cerberus`, never inside `render()`: the state root is not read once per frame.
  */
-let shownMode: Mode = "gate";
+let shownMode: Mode = "disabled";
 let shownOwner: string | undefined;
 let shownTui: Tui | undefined;
 let indicatorTimer: ReturnType<typeof setInterval> | undefined;
@@ -285,18 +296,27 @@ const INDICATOR_MS = 2000;
 /** The indicator's id inside the shared status row. */
 const INDICATOR_ID = "cerberus";
 
+/** Words the switch accepts. `capture`/`disabled` stay as aliases for old fingers. */
 const MODE_WORDS: Record<string, Mode> = {
   on: "capture",
-  off: "gate",
-  disabled: "disabled",
+  off: "disabled",
   capture: "capture",
-  gate: "gate",
+  disabled: "disabled",
 };
+
+/** What `gate` and friends get instead of a mode change. */
+const RETIRED = "gate is retired (use on or off)";
+
+/** `on`/`off` for a mode: the words the rest of the switch speaks. */
+function modeWord(mode: Mode): string {
+  return mode === "capture" ? "on" : "off";
+}
 
 /** Where the effective mode came from, in the words a user can act on. */
 function modeStatus(owner: string | undefined): string {
   const source = modeSource(owner);
-  return `cerberus: mode ${readMode(owner)} (${source}${source === "session" && owner ? ` ${owner}` : ""})`;
+  const mode = readMode(owner);
+  return `cerberus: mode ${modeWord(mode)} (${source}${source === "session" && owner ? ` ${owner}` : ""})`;
 }
 
 function question(id: string): string {
@@ -353,10 +373,9 @@ async function registerBash(pi: ExtensionAPI): Promise<void> {
  */
 function registerModeCommand(pi: ExtensionAPI): void {
   pi.registerCommand("cerberus", {
-    description:
-      "cerberus mode: on (capture every bash call) | off (ask before long ones) | disabled (nothing) | status | default <mode>",
+    description: "cerberus mode: on (capture every bash call) | off (nothing) | status | default <on|off>",
     getArgumentCompletions: (prefix: string) =>
-      ["on", "off", "disabled", "status", "default"]
+      ["on", "off", "status", "default"]
         .filter((word) => word.startsWith(prefix))
         .map((word) => ({ value: word, label: word })),
     handler: async (args, ctx) => {
@@ -380,24 +399,36 @@ function runModeCommand(word: string, words: string[], owner: string | undefined
     ctx.ui.notify(modeStatus(owner), "info");
     return;
   }
+  if (word === "gate") {
+    ctx.ui.notify(`cerberus: ${RETIRED}`, "warning");
+    return;
+  }
   if (word === "default") {
-    const global = MODE_WORDS[words[1] ?? ""];
+    const word = words[1] ?? "";
+    if (word === "gate") {
+      ctx.ui.notify(`cerberus: ${RETIRED}`, "warning");
+      return;
+    }
+    const global = MODE_WORDS[word];
     if (!global) {
-      ctx.ui.notify(`cerberus: default: unknown argument "${words[1] ?? ""}" (use on, off or disabled)`, "warning");
+      ctx.ui.notify(`cerberus: default: unknown argument "${word}" (use on or off)`, "warning");
       return;
     }
     writeMode(global);
-    ctx.ui.notify(`cerberus: default mode ${global}`, "info");
+    ctx.ui.notify(`cerberus: default mode ${modeWord(global)}`, "info");
     return;
   }
   const mode = MODE_WORDS[word];
   if (!mode) {
-    ctx.ui.notify(`cerberus: unknown argument "${word}" (use on, off, disabled, status or default)`, "warning");
+    ctx.ui.notify(`cerberus: unknown argument "${word}" (use on, off, status or default)`, "warning");
     return;
   }
   // No session id (a one-shot run) leaves only the default to set.
   writeMode(mode, owner);
-  ctx.ui.notify(owner ? `cerberus: mode ${mode} (session ${owner})` : `cerberus: default mode ${mode}`, "info");
+  ctx.ui.notify(
+    owner ? `cerberus: mode ${modeWord(mode)} (session ${owner})` : `cerberus: default mode ${modeWord(mode)}`,
+    "info",
+  );
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -434,7 +465,7 @@ export default async function (pi: ExtensionAPI) {
           const next = cycleMode(shownMode);
           writeMode(next, owner);
           refreshIndicator();
-          ctx.ui.notify(`cerberus: mode ${next} (session ${owner})`, "info");
+          ctx.ui.notify(`cerberus: mode ${modeWord(next)} (session ${owner})`, "info");
         },
         notify: (message, level) => ctx.ui.notify(message, level),
         MouseRegion,
@@ -455,10 +486,13 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", async (event, ctx: ExtensionContext) => {
+    // Retired: no rules, no staging, no questions, in any mode.
+    if (!GATE_ENABLED) return;
     if (event.toolName !== "bash") return;
-    // Only `gate` asks anything: `capture` owns every bash call inside the tool itself,
-    // and `disabled` is cerberus out of the way entirely - no rules, no questions.
-    if (readMode(ctx.sessionManager.getSessionId() || undefined) !== "gate") return;
+    // Only `off` asks anything: `on` (capture) owns every bash call inside the tool
+    // itself. While the gate is enabled, `off` means the old gate; while it is retired
+    // this line is unreachable (the return above already fired).
+    if (readMode(ctx.sessionManager.getSessionId() || undefined) !== "disabled") return;
     const original = event.input.command;
     if (typeof original !== "string" || original.length === 0) return;
 
@@ -521,6 +555,9 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, _ctx: ExtensionContext) => {
+    // The section describes the gate's question; without the gate there is nothing to
+    // describe (capture's one-line notices explain `cerberus wait` themselves).
+    if (!GATE_ENABLED) return;
     try {
       const options = event.systemPromptOptions;
       if (!options.sections) options.sections = {};

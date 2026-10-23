@@ -76,9 +76,9 @@ export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap|mode|shim>
   rc [<id>]
   stop <id> [--force]
   reap [--owner <sid> | --all-stale] [--decisions] [--quiet] [--json]
-  mode [on|off|disabled|status] [--owner <sid> | --default]
-                            bash behaviour: on = capture, off = gate, disabled = nothing;
-                            this session unless --default (on = capture, off = gate)
+  mode [on|off|status] [--owner <sid> | --default]
+                            bash behaviour: on = capture every call, off = nothing at all
+                            (gate is retired); this session unless --default
   shim [--dir <dir>] [--remove] [--quiet]   link this CLI into a directory on PATH
 
 With no <id>, log/rc/wait use the most recent task of the current owner.
@@ -630,17 +630,25 @@ function isLinkTo(path: string, target: string): boolean {
   }
 }
 
+/** Words the switch accepts. `capture`/`disabled` stay as aliases for old scripts. */
 const MODE_WORDS: Record<string, Mode> = {
   on: "capture",
-  off: "gate",
-  disabled: "disabled",
+  off: "disabled",
   capture: "capture",
-  gate: "gate",
+  disabled: "disabled",
 };
 
+/** What `gate` and friends get instead of a mode change. */
+const RETIRED = "gate is retired (use on or off)";
+
+/** `on`/`off` for a mode: the words the switch speaks. */
+function modeWord(mode: Mode): string {
+  return mode === "capture" ? "on" : "off";
+}
+
 /**
- * `cerberus mode [on|off|disabled|status] [--owner <sid> | --default]`: the same
- * switch `/cerberus` sets, for scripts. Without `--default` it addresses one session -
+ * `cerberus mode [on|off|status] [--owner <sid> | --default]`: the same switch
+ * `/cerberus` sets, for scripts. Without `--default` it addresses one session -
  * `--owner`, or the session this command runs in (`PI_SESSION_ID`) - and it refuses to
  * guess, since a session switch that quietly changed the whole machine is exactly the
  * behaviour per-session mode exists to stop.
@@ -651,12 +659,17 @@ export function modeCommand(args: Args, io: Io = stdIo): number {
   const target = owner ? ` (session ${owner})` : " (default)";
   if (word === "" || word === "status") {
     const source = modeSource(owner);
-    io.out(note(`mode ${readMode(owner)} (${source}${source === "session" && owner ? ` ${owner}` : ""})`));
+    const session = source === "session" && owner ? ` ${owner}` : "";
+    io.out(note(`mode ${modeWord(readMode(owner))} (${source}${session})`));
     return 0;
+  }
+  if (word === "gate") {
+    io.err(fail(`mode: ${RETIRED}`));
+    return 2;
   }
   const mode = MODE_WORDS[word];
   if (!mode) {
-    io.err(fail(`mode: expected on, off, disabled or status (got ${word})`));
+    io.err(fail(`mode: expected on, off or status (got ${word})`));
     return 2;
   }
   if (!owner && !args.bools.has("default")) {
@@ -664,7 +677,7 @@ export function modeCommand(args: Args, io: Io = stdIo): number {
     return 2;
   }
   writeMode(mode, owner);
-  io.out(note(`mode ${mode}${target}`));
+  io.out(note(`mode ${modeWord(mode)}${target}`));
   return 0;
 }
 

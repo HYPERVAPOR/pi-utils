@@ -35,19 +35,34 @@ export const STAGED_TTL_MS = 60 * 60 * 1000;
 /**
  * How the bash tool behaves.
  *
- * `gate` keeps the original gate: rules pick the few commands that look long and
- * ask before anything runs. `capture` runs every command and only gives up on the
- * result after the budget, leaving the rest of the task running. `disabled` is
- * cerberus out of the way: no rules, no questions, no tasks, plain pi.
+ * `capture` (`on`) runs every command and only gives up on the result after the budget,
+ * leaving the rest of the task running. `disabled` (`off`) is cerberus out of the way:
+ * no capture, no rules, no questions, no tasks, plain pi.
+ *
+ * `gate` - the old "ask before the few commands that look long" mode - is retired for
+ * now (`extensions/cerberus.ts`, `GATE_ENABLED`). It is not a selectable mode any more;
+ * a config file that still says `gate` reads as `disabled`, because quietly starting to
+ * capture would be new overhead nobody asked for.
  */
-export type Mode = "gate" | "capture" | "disabled";
+export type Mode = "capture" | "disabled";
 
-export const MODES: readonly Mode[] = ["gate", "capture", "disabled"];
+export const MODES: readonly Mode[] = ["capture", "disabled"];
 
-export const DEFAULT_MODE: Mode = "gate";
+export const DEFAULT_MODE: Mode = "disabled";
 
 export function isMode(value: unknown): value is Mode {
   return typeof value === "string" && (MODES as readonly string[]).includes(value);
+}
+
+/**
+ * A stored mode as the mode that is in force now: retired words map to their safe
+ * replacement, anything unrecognised is dropped. This is the whole legacy path - read
+ * through it once and the config is already migrated in memory, so the next
+ * `writeMode` (which only writes current modes) persists the migration.
+ */
+export function migrateMode(value: unknown): Mode | undefined {
+  if (value === "gate") return "disabled";
+  return isMode(value) ? value : undefined;
 }
 
 export interface TaskMeta {
@@ -99,10 +114,11 @@ export function readConfig(): Config {
   }
   const sessions: Record<string, Mode> = {};
   for (const [owner, mode] of Object.entries(parsed?.sessions ?? {})) {
-    if (isMode(mode)) sessions[owner] = mode;
+    const current = migrateMode(mode);
+    if (current) sessions[owner] = current;
   }
   // `{"mode": "capture"}` was the whole machine's mode; it becomes the default.
-  const fallback = isMode(parsed?.default) ? parsed.default : isMode(parsed?.mode) ? parsed.mode : DEFAULT_MODE;
+  const fallback = migrateMode(parsed?.default) ?? migrateMode(parsed?.mode) ?? DEFAULT_MODE;
   return { default: fallback, sessions };
 }
 

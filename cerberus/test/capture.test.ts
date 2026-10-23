@@ -256,9 +256,9 @@ try {
     const command = "echo switch";
     assert.equal(capture.captureBudgetMs(), capture.DEFAULT_BUDGET_MS, "10s by default");
 
-    paths.writeMode("gate");
+    paths.writeMode("disabled");
     assert.equal((await run(ours, owner, command, undefined)).structuredContent.exit_code, 0);
-    assert.equal(paths.listOwner(owner).length, 0, "gate mode leaves the task machinery alone");
+    assert.equal(paths.listOwner(owner).length, 0, "disabled leaves the task machinery alone");
 
     paths.writeMode("capture");
     assert.equal((await run(ours, owner, command, undefined)).structuredContent.exit_code, 0);
@@ -350,12 +350,12 @@ try {
   // --- F: the mode is per session, and `disabled` is plain pi ------------
   {
     process.env[capture.BUDGET_ENV] = "200";
-    const [capturing, gated, off] = ["mode-capture", "mode-gate", "mode-disabled"];
-    paths.writeMode("gate");
+    const [capturing, quiet] = ["mode-capture", "mode-disabled"];
+    paths.writeMode("disabled");
     paths.writeMode("capture", capturing);
-    paths.writeMode("disabled", off);
-    assert.deepEqual(paths.readConfig(), { default: "gate", sessions: { [capturing]: "capture", [off]: "disabled" } });
-    assert.equal(paths.readMode(gated), "gate");
+    paths.writeMode("disabled", quiet);
+    assert.deepEqual(paths.readConfig(), { default: "disabled", sessions: { [capturing]: "capture", [quiet]: "disabled" } });
+    assert.equal(paths.readMode(quiet), "disabled");
 
     // A captures: a fast command leaves nothing, a slow one hands back an id.
     assert.equal((await run(ours, capturing, "echo fast")).structuredContent.exit_code, 0);
@@ -366,19 +366,20 @@ try {
     assert.equal(paths.listOwner(capturing).length, 1);
 
     // B shares the config but not the mode: its slow command runs inline.
-    const inline = await run(ours, gated, "sleep 0.6; echo late-b");
-    assert.equal(textOf(inline), "late-b\n", "the gated owner waits for it");
-    assert.deepEqual(paths.listOwner(gated), [], "the gated owner stages nothing");
+    const inline = await run(ours, quiet, "sleep 0.6; echo late-b");
+    assert.equal(textOf(inline), "late-b\n", "the disabled owner waits for it");
+    assert.deepEqual(paths.listOwner(quiet), [], "the disabled owner stages nothing");
     assert.equal(paths.listOwner(capturing).length, 1, "and does not disturb the other one");
 
-    // C is disabled: the built-in's own result, and nothing on disk.
-    compare("disabled is the built-in", await run(ours, off, "echo disabled"), await run(reference, off, "echo disabled"));
-    assert.equal(textOf(await run(ours, off, "sleep 0.4; echo off")), "off\n");
-    assert.deepEqual(paths.listOwner(off), [], "disabled leaves nothing behind");
+    // A session with no entry of its own gets the default, which is off.
+    const plain = "mode-default";
+    compare("disabled is the built-in", await run(ours, plain, "echo disabled"), await run(reference, plain, "echo disabled"));
+    assert.equal(textOf(await run(ours, plain, "sleep 0.4; echo off")), "off\n");
+    assert.deepEqual(paths.listOwner(plain), [], "disabled leaves nothing behind");
 
     spawnSync(BIN, ["stop", slowId, "--owner", capturing], { encoding: "utf8" });
-    for (const owner of [capturing, gated, off]) rmSync(paths.ownerDir(owner), { recursive: true, force: true });
-    paths.writeMode("gate");
+    for (const owner of [capturing, quiet, plain]) rmSync(paths.ownerDir(owner), { recursive: true, force: true });
+    paths.writeMode("disabled");
     delete process.env[capture.BUDGET_ENV];
   }
 } finally {

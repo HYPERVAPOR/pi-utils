@@ -178,33 +178,39 @@ try {
     const read = () => JSON.parse(readFileSync(config, "utf8"));
     const status = cli(["mode"]);
     assert.equal(status.status, 0, status.stderr);
-    assert.equal(status.stdout, "cerberus: mode gate (default)\n", "gate is the built-in default");
+    assert.equal(status.stdout, "cerberus: mode off (default)\n", "off is the built-in default");
 
     const on = cli(["mode", "on"]);
-    assert.equal(on.stdout, "cerberus: mode capture (session cli-owner)\n");
-    assert.deepEqual(read(), { default: "gate", sessions: { "cli-owner": "capture" } });
-    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode capture (session cli-owner)\n");
-    assert.equal(cli(["mode", "capture"]).stdout, "cerberus: mode capture (session cli-owner)\n", "the mode's own word works");
+    assert.equal(on.stdout, "cerberus: mode on (session cli-owner)\n");
+    assert.deepEqual(read(), { default: "disabled", sessions: { "cli-owner": "capture" } });
+    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode on (session cli-owner)\n");
+    assert.equal(cli(["mode", "capture"]).stdout, "cerberus: mode on (session cli-owner)\n", "the mode's own word works");
 
     // Another session is untouched, and reads the switch back as the default.
-    assert.equal(cli(["mode", "status"], "other").stdout, "cerberus: mode gate (default)\n");
-    assert.equal(cli(["mode", "off"], "other").stdout, "cerberus: mode gate (session other)\n");
-    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode capture (session cli-owner)\n");
-    assert.equal(cli(["mode", "--owner", "cli-owner", "disabled"]).stdout, "cerberus: mode disabled (session cli-owner)\n");
-    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode disabled (session cli-owner)\n");
+    assert.equal(cli(["mode", "status"], "other").stdout, "cerberus: mode off (default)\n");
+    assert.equal(cli(["mode", "off"], "other").stdout, "cerberus: mode off (session other)\n");
+    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode on (session cli-owner)\n");
+    assert.equal(cli(["mode", "--owner", "cli-owner", "disabled"]).stdout, "cerberus: mode off (session cli-owner)\n");
+    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode off (session cli-owner)\n");
 
     // --default changes what sessions without an entry get; entries survive.
-    assert.equal(cli(["mode", "on", "--default"]).stdout, "cerberus: mode capture (default)\n");
-    assert.equal(cli(["mode", "status"], "fresh").stdout, "cerberus: mode capture (default)\n");
-    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode disabled (session cli-owner)\n");
-    assert.deepEqual(read(), { default: "capture", sessions: { "cli-owner": "disabled", other: "gate" } });
-    assert.equal(cli(["mode", "status", "--default"]).stdout, "cerberus: mode capture (default)\n");
+    assert.equal(cli(["mode", "on", "--default"]).stdout, "cerberus: mode on (default)\n");
+    assert.equal(cli(["mode", "status"], "fresh").stdout, "cerberus: mode on (default)\n");
+    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode off (session cli-owner)\n");
+    assert.deepEqual(read(), { default: "capture", sessions: { "cli-owner": "disabled", other: "disabled" } });
+    assert.equal(cli(["mode", "status", "--default"]).stdout, "cerberus: mode on (default)\n");
+
+    // `gate` is retired: refused, with a hint, and nothing written.
+    const retired = cli(["mode", "gate"]);
+    assert.equal(retired.status, 2);
+    assert.equal(retired.stderr, "cerberus: error: mode: gate is retired (use on or off)\n");
+    assert.deepEqual(read(), { default: "capture", sessions: { "cli-owner": "disabled", other: "disabled" } });
 
     // A bad word changes nothing.
     const bad = cli(["mode", "bogus"]);
     assert.equal(bad.status, 2);
-    assert.equal(bad.stderr, "cerberus: error: mode: expected on, off, disabled or status (got bogus)\n");
-    assert.deepEqual(read(), { default: "capture", sessions: { "cli-owner": "disabled", other: "gate" } });
+    assert.equal(bad.stderr, "cerberus: error: mode: expected on, off or status (got bogus)\n");
+    assert.deepEqual(read(), { default: "capture", sessions: { "cli-owner": "disabled", other: "disabled" } });
 
     // No session and no --default: refuse rather than change the whole machine.
     const none = spawnSync(BIN, ["mode", "on"], {
@@ -216,9 +222,11 @@ try {
     assert.equal(none.stderr, "cerberus: error: mode: no session (pass --owner, set PI_SESSION_ID, or use --default)\n");
     assert.equal(JSON.parse(readFileSync(config, "utf8")).default, "capture", "nothing changed");
 
-    // An old `{"mode": ...}` file is still the default.
+    // An old `{"mode": ...}` file is still the default, and a stored `gate` is off.
+    writeFileSync(config, JSON.stringify({ mode: "capture" }));
+    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode on (default)\n");
     writeFileSync(config, JSON.stringify({ mode: "gate" }));
-    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode gate (default)\n");
+    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode off (default)\n", "retired gate reads as off");
     rmSync(config);
   }
 

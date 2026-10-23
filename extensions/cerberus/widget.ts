@@ -15,22 +15,22 @@ import type { Mode } from "../../cerberus/paths.ts";
 /** The widget key, so shutdown can remove exactly the widget it added. */
 export const WIDGET_KEY = "cerberus";
 
-/** What a double click does: capture -> gate -> disabled -> capture. */
-export const ORDER: readonly Mode[] = ["capture", "gate", "disabled"];
+/** The two modes, in the order a double click walks them: on -> off -> on. */
+export const ORDER: readonly Mode[] = ["capture", "disabled"];
 
-/** The next mode in the double-click cycle. */
+/** What a double click does: on -> off, off -> on. */
 export function cycleMode(mode: Mode): Mode {
   const index = ORDER.indexOf(mode);
   return ORDER[(index + 1) % ORDER.length] ?? ORDER[0];
 }
 
-/** `cerberus:capture` - 16 columns at most, so it fits beside any sane editor. */
+/** `cerberus:on` / `cerberus:off` - the words the switch uses, and short enough to fit. */
 export function indicatorText(mode: Mode): string {
-  return `cerberus:${mode}`;
+  return `cerberus:${mode === "capture" ? "on" : "off"}`;
 }
 
-/** Colour by meaning: doing the work, asking first, or not there at all. */
-const COLORS: Record<Mode, string> = { capture: "success", gate: "warning", disabled: "dim" };
+/** Colour by meaning: cerberus is running every command, or it is not there. */
+const COLORS: Record<Mode, string> = { capture: "success", disabled: "dim" };
 
 /** The parts of pi's TUI this module uses, structurally - no runtime import. */
 export interface Theme {

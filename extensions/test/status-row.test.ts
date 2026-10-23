@@ -50,7 +50,12 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
   const ui = fakeUi();
   const hits: string[] = [];
   let shown: "capture" | "gate" | "disabled" = "capture";
-  const cerberus = createIndicator({ mode: () => shown, cycle: () => void (shown = "gate"), notify: () => {}, MouseRegion: api.MouseRegion });
+  const cerberus = createIndicator({
+    mode: () => shown,
+    cycle: () => void (shown = shown === "capture" ? "disabled" : "capture"),
+    notify: () => {},
+    MouseRegion: api.MouseRegion,
+  });
 
   const t = tui();
   joinStatusRow(ui, "hb_block", stubPart("hb_block:true", hits), api);
@@ -64,11 +69,11 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
   joinStatusRow(ui, "cerberus", cerberus, api);
   assert.equal(ui.calls.length, 1, "the second join does not re-set the widget");
   assert.equal(t.renders, 1, "it repaints through the tui the render remembered");
-  assert.deepEqual(row.render(200).map(plain), ["hb_block:truesuccess|cerberus:capture"], "join order, one line");
+  assert.deepEqual(row.render(200).map(plain), ["hb_block:truesuccess|cerberus:on"], "join order, one line");
 
   // The indicator part keeps working inside the row.
   shown = "disabled";
-  assert.deepEqual(row.render(200).map(plain), ["hb_block:truedim|cerberus:disabled"]);
+  assert.deepEqual(row.render(200).map(plain), ["hb_block:truedim|cerberus:off"]);
 
   // 4. Column routing: the click lands on the part that owns those columns.
   // `hb_block:true` is 13 columns, so the cerberus part starts at x=13.
@@ -80,20 +85,20 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
   assert.equal(shown, "disabled", "cerberus did not see those clicks");
 
   row.handleMouse(clickAt(13));   // the cerberus part owns [13, 13 + label)
-  assert.equal(shown, "gate", "the double click reached cerberus's cycle");
+  assert.equal(shown, "capture", "the double click reached cerberus's cycle");
   assert.equal(hits.length, 2, "and not the other part's handler");
-  assert.deepEqual(row.render(200).map(plain), ["hb_block:truewarning|cerberus:gate"]);
+  assert.deepEqual(row.render(200).map(plain), ["hb_block:truesuccess|cerberus:on"]);
 
   // A single click, the right button and a click past both parts do nothing.
   row.handleMouse(clickAt(13, 1));
   row.handleMouse({ ...clickAt(13), button: "right" });
   row.handleMouse(clickAt(190));
-  assert.equal(shown, "gate", "no other click changes the mode");
+  assert.equal(shown, "capture", "no other click changes the mode");
 
   // 2. Leaving one part re-renders with only the other, and the last one clears.
   leaveStatusRow(ui, "hb_block");
   assert.equal(ui.calls.length, 1, "leaving a part does not touch the widget");
-  assert.deepEqual(row.render(200).map(plain), ["warning|cerberus:gate"], "only the remaining part");
+  assert.deepEqual(row.render(200).map(plain), ["success|cerberus:on"], "only the remaining part");
   leaveStatusRow(ui, "cerberus");
   assert.deepEqual(ui.calls.at(-1), { key: ROW_KEY, content: undefined }, "the row is removed");
   assert.equal(ui.calls.length, 2);
@@ -120,7 +125,7 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
       return theirs.render();
     },
   };
-  joinStatusRow(ui, "cerberus", stubPart("cerberus:gate"), api);
+  joinStatusRow(ui, "cerberus", stubPart("cerberus:on"), api);
   assert.deepEqual(ui.calls, [], "no second setWidget: they already own the widget");
   const row = (globalThis as any)[GLOBAL_KEY];
   assert.deepEqual([...row.parts.keys()], ["hb_block", "cerberus"], "the existing part was kept");
@@ -135,12 +140,12 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
   reset();
   const ui = fakeUi();
   assert.equal(statusRowAvailable({} as any), false);
-  assert.throws(() => joinStatusRow(ui, "cerberus", stubPart("cerberus:gate"), {} as any), /no HStack/);
+  assert.throws(() => joinStatusRow(ui, "cerberus", stubPart("cerberus:on"), {} as any), /no HStack/);
   assert.deepEqual(ui.calls, [], "no widget was written");
   assert.equal((globalThis as any)[GLOBAL_KEY], undefined, "and no registry was created");
 
   // What the extension does with that: its own line under its own key.
-  ui.setWidget(WIDGET_KEY, stubPart("cerberus:gate"));
+  ui.setWidget(WIDGET_KEY, stubPart("cerberus:on"));
   assert.deepEqual(ui.calls.map((call) => call.key), [WIDGET_KEY]);
 }
 
@@ -156,12 +161,12 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
       ui.setWidget(key, content);
     },
   };
-  assert.throws(() => joinStatusRow(throwingUi, "cerberus", stubPart("cerberus:gate"), api), /refused/);
+  assert.throws(() => joinStatusRow(throwingUi, "cerberus", stubPart("cerberus:on"), api), /refused/);
   const row = (globalThis as any)[GLOBAL_KEY];
   assert.equal(row.parts.size, 0, "the part did not stay behind");
   assert.equal(row.widgetSet, false, "and we do not think we own a widget");
   fail = false;
-  joinStatusRow(throwingUi, "cerberus", stubPart("cerberus:gate"), api);
+  joinStatusRow(throwingUi, "cerberus", stubPart("cerberus:on"), api);
   assert.equal(ui.calls.length, 1, "a retry works");
   leaveStatusRow(ui, "cerberus");
 }
