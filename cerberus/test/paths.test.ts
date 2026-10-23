@@ -31,9 +31,14 @@ const {
   readPid,
   readRc,
   RETENTION_BYTES,
+  configPath,
+  modeSource,
+  readConfig,
+  readMode,
   taskDir,
   tasksRoot,
   tildify,
+  writeMode,
   writeDecision,
   writeMeta,
   writePid,
@@ -254,6 +259,45 @@ process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), "cerberus-size-"));
   assert.equal(tildify("/home/hvx/y"), "/home/hvx/y", "a sibling of home is not home");
   assert.equal(tildify("relative/path"), "relative/path");
   assert.equal(tildify("/tmp/x"), "/tmp/x");
+}
+
+// --- config: a default plus one entry per session ------------------------
+{
+  // Another block moved the state root; the config lives under the real one.
+  process.env.XDG_STATE_HOME = root;
+  assert.equal(readMode(), "gate", "built-in default");
+  assert.equal(readMode("sess-1"), "gate");
+  assert.equal(modeSource("sess-1"), "default");
+
+  // Pre-v2.1 `{"mode": ...}` was the whole machine's mode: it is the default now.
+  writeFileSync(configPath(), JSON.stringify({ mode: "capture" }));
+  assert.deepEqual(readConfig(), { default: "capture", sessions: {} });
+  assert.equal(readMode(), "capture");
+  assert.equal(readMode("sess-1"), "capture");
+  assert.equal(modeSource("sess-1"), "default");
+
+  // A session entry wins over the default; other sessions keep reading the default.
+  writeMode("disabled", "sess-1");
+  assert.equal(readMode("sess-1"), "disabled");
+  assert.equal(modeSource("sess-1"), "session");
+  assert.equal(readMode("sess-2"), "capture");
+  assert.equal(modeSource("sess-2"), "default");
+  assert.deepEqual(readConfig(), { default: "capture", sessions: { "sess-1": "disabled" } });
+
+  writeMode("gate");
+  assert.equal(readMode(), "gate", "the default changed, the session entry did not");
+  assert.equal(readMode("sess-1"), "disabled");
+  assert.deepEqual(JSON.parse(readFileSync(configPath(), "utf8")), {
+    default: "gate",
+    sessions: { "sess-1": "disabled" },
+  });
+
+  // Junk in the file is ignored rather than trusted.
+  writeFileSync(configPath(), JSON.stringify({ default: "nonsense", sessions: { a: "bogus", b: "gate" } }));
+  assert.deepEqual(readConfig(), { default: "gate", sessions: { b: "gate" } }, "bad entries dropped");
+  writeFileSync(configPath(), "not json at all");
+  assert.deepEqual(readConfig(), { default: "gate", sessions: {} });
+  rmSync(configPath(), { force: true });
 }
 
 rmSync(root, { recursive: true, force: true });

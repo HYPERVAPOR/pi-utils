@@ -37,11 +37,18 @@ export const STAGED_TTL_MS = 60 * 60 * 1000;
  *
  * `gate` keeps the original gate: rules pick the few commands that look long and
  * ask before anything runs. `capture` runs every command and only gives up on the
- * result after the budget, leaving the rest of the task running.
+ * result after the budget, leaving the rest of the task running. `disabled` is
+ * cerberus out of the way: no rules, no questions, no tasks, plain pi.
  */
-export type Mode = "gate" | "capture";
+export type Mode = "gate" | "capture" | "disabled";
+
+export const MODES: readonly Mode[] = ["gate", "capture", "disabled"];
 
 export const DEFAULT_MODE: Mode = "gate";
+
+export function isMode(value: unknown): value is Mode {
+  return typeof value === "string" && (MODES as readonly string[]).includes(value);
+}
 
 export interface TaskMeta {
   owner: string;
@@ -77,19 +84,53 @@ export function configPath(): string {
   return join(cerberusRoot(), "config.json");
 }
 
-/** Read per call, so `/cerberus on|off` takes effect without a restart. */
-export function readMode(): Mode {
-  try {
-    const parsed = JSON.parse(readFileSync(configPath(), "utf8"));
-    return parsed?.mode === "capture" || parsed?.mode === "gate" ? parsed.mode : DEFAULT_MODE;
-  } catch {
-    return DEFAULT_MODE;
-  }
+/** `{"default": ..., "sessions": {...}}`, with the pre-v2.1 `{"mode": ...}` read as default. */
+export interface Config {
+  default: Mode;
+  sessions: Record<string, Mode>;
 }
 
-export function writeMode(mode: Mode): void {
+export function readConfig(): Config {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(readFileSync(configPath(), "utf8"));
+  } catch {
+    return { default: DEFAULT_MODE, sessions: {} };
+  }
+  const sessions: Record<string, Mode> = {};
+  for (const [owner, mode] of Object.entries(parsed?.sessions ?? {})) {
+    if (isMode(mode)) sessions[owner] = mode;
+  }
+  // `{"mode": "capture"}` was the whole machine's mode; it becomes the default.
+  const fallback = isMode(parsed?.default) ? parsed.default : isMode(parsed?.mode) ? parsed.mode : DEFAULT_MODE;
+  return { default: fallback, sessions };
+}
+
+/**
+ * The mode that applies to `owner`: the session entry first, then the default, then
+ * `DEFAULT_MODE`. Read per call, so a switch takes effect without a restart.
+ */
+export function readMode(owner?: string): Mode {
+  const config = readConfig();
+  return (owner ? config.sessions[owner] : undefined) ?? config.default;
+}
+
+/** Where `readMode(owner)` got its answer, for `status` to say out loud. */
+export function modeSource(owner?: string): "session" | "default" {
+  const config = readConfig();
+  return owner && config.sessions[owner] ? "session" : "default";
+}
+
+/**
+ * Set the mode for one session (`owner`) or for the machine (`default`). Other
+ * sessions keep theirs, and nothing is written unless asked.
+ */
+export function writeMode(mode: Mode, owner?: string): void {
+  const config = readConfig();
+  if (owner) config.sessions[owner] = mode;
+  else config.default = mode;
   mkdirSync(cerberusRoot(), { recursive: true });
-  writeAtomic(configPath(), `${JSON.stringify({ mode }, null, 2)}\n`);
+  writeAtomic(configPath(), `${JSON.stringify(config, null, 2)}\n`);
 }
 
 /** Session ids are used as directory names, so keep them to a safe alphabet. */

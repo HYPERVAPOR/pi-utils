@@ -9,6 +9,10 @@
  * notice, `details`, `isError` and `structuredContent` itself - which is exactly why
  * a command that finishes inside the budget looks byte-identical to a built-in run.
  *
+ * The mode is per session (`paths.ts`): `readMode(owner)` answers for the session the
+ * call belongs to, so one pane can capture while another asks and a third has cerberus
+ * out of the way entirely.
+ *
  * A command that outlives `CERBERUS_CAPTURE_BUDGET_MS` (10s by default) throws
  * `SlowTask`; the tool wrapper turns that into one line and the task keeps running.
  * A command that finishes in time leaves nothing behind: the model never saw the id,
@@ -29,8 +33,9 @@
  * `rules.ts` - one command that is not `cerberus` puts the whole line back on the
  * capture path.
  *
- * In `gate` mode nothing here happens: the call goes straight to pi's own
- * `createLocalBashOperations`, so the legacy gate keeps behaving exactly as before.
+ * In `gate` and `disabled` modes nothing here happens: the call goes straight to pi's
+ * own `createLocalBashOperations`, so the gate keeps behaving exactly as before and
+ * `disabled` is plain pi.
  */
 import { closeSync, existsSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -63,6 +68,11 @@ export interface ExecOptions {
 /** pi's `BashOperations`, structurally: no runtime import of the package here. */
 export interface Operations {
   exec(command: string, cwd: string, options: ExecOptions): Promise<{ exitCode: number | null }>;
+}
+
+/** The session this call belongs to; pi passes it in the shell environment. */
+export function ownerOf(options: { env?: NodeJS.ProcessEnv }): string | undefined {
+  return options.env?.PI_SESSION_ID ?? process.env.PI_SESSION_ID ?? undefined;
 }
 
 export function captureBudgetMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -117,16 +127,19 @@ async function discard(task: Task): Promise<void> {
 }
 
 /**
- * One operations object for both modes. `local` is pi's own bash backend, used
- * untouched in `gate` mode and for lines that are only the gate's own CLI; the mode is
- * read per call so a flip needs no restart.
+ * One operations object for every mode. `local` is pi's own bash backend, used
+ * untouched in `gate`/`disabled` modes and for lines that are only the gate's own CLI;
+ * the mode is read per session per call, so a flip needs no restart.
  */
 export function createOperations(local: Operations, budgetMs: () => number = captureBudgetMs): Operations {
   return {
-    exec: (command, cwd, options) =>
-      readMode() === "capture" && !onlyInvokesGate(command)
-        ? capture(command, cwd, options, budgetMs())
-        : local.exec(command, cwd, options),
+    exec: (command, cwd, options) => {
+      // Only `capture` runs tasks, and only for lines that are not just the CLI itself.
+      if (readMode(ownerOf(options)) !== "capture" || onlyInvokesGate(command)) {
+        return local.exec(command, cwd, options);
+      }
+      return capture(command, cwd, options, budgetMs());
+    },
   };
 }
 
@@ -149,7 +162,7 @@ async function capture(
   budgetMs: number,
 ): Promise<{ exitCode: number | null }> {
   if (options.signal?.aborted) throw new Error("aborted");
-  const owner = options.env?.PI_SESSION_ID ?? process.env.PI_SESSION_ID ?? "no-session";
+  const owner = ownerOf(options) ?? "no-session";
   const task = stage(owner, cwd, command);
   // `timeout` is the task's deadline; the budget below is this call's. See the module
   // comment for what each order of the two produces.

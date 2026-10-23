@@ -78,9 +78,20 @@ The shim is created on install, not on `pi update`: updating only fetches the cl
 it runs no scripts. `-e` users (a checkout or a profile) never install, so they need
 `cerberus shim` once.
 
-Two modes, switched at runtime with `/cerberus on|off|status` or `cerberus mode
-on|off|status` and stored in `$XDG_STATE_HOME/cerberus/config.json` (read once per tool
-call, so a flip needs no restart). The default is `gate`.
+Three modes, switched at runtime and **per session**: `/cerberus on|off|disabled`
+or `cerberus mode on|off|disabled` changes the session you are in, `/cerberus default
+<mode>` (or `cerberus mode <mode> --default`) changes what every other session gets.
+`/cerberus status` and `cerberus mode status` print the effective mode and where it
+came from (`session` or `default`).
+
+```json
+{ "default": "gate", "sessions": { "<session id>": "capture" } }
+```
+
+is `$XDG_STATE_HOME/cerberus/config.json`: the session entry wins, then `default`, then
+the built-in `gate` - so two panes can run different modes at the same time. It is
+read on every tool call and every gate check, so a flip needs no restart, and an old
+`{"mode": "capture"}` file is read as the new `default`. `gate` (below) is the default.
 
 **`capture` (`/cerberus on`)** replaces the built-in `bash` tool with the same
 definition - pi's own `createBashToolDefinition`, so schema, description, truncation
@@ -107,6 +118,10 @@ the budget, the task is killed at the deadline and the result is pi's usual
 `Command timed out after N seconds` (rc 124). If the deadline is at or past the
 budget, the model gets `still running` first; the supervisor kills the task when the
 deadline comes, so `cerberus wait`/`rc` report rc 124 later.
+
+**`disabled` (`/cerberus disabled`)**: cerberus out of the way - no capture, no rules,
+no questions, no tasks. The `bash` tool is pi's own, unchanged, and a long command is
+just a long command.
 
 **`gate` (`/cerberus off`, the default)**: a gate in front of `bash`. Ordinary
 commands pass through byte-for-byte, and a
