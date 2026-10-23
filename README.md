@@ -112,11 +112,14 @@ returned - the same truncation (last 2000 lines / 50KB), the same notice, and th
 task's `out.log` where pi's temp file would be. Cancelling the call stops the task.
 In this mode the gate below is a no-op: no rules, no questions.
 
-One exception: a line whose simple commands are *all* the CLI itself (`cerberus wait
-<id>`, `cerberus ls`, `'.../bin/cerberus' log <id>`) runs locally instead, because the
-CLI is the control plane, not work - one call collects a task, instead of a `wait` task
-that needs a `wait` of its own. One other command anywhere in the line puts it back on
-the capture path: `cerberus ls && npm run build` is captured like any other line.
+One exception: a line that *starts* with the CLI itself (`cerberus wait <id>`,
+`cerberus ls`, `'.../bin/cerberus' log <id>`, and `cerberus wait <id> | tail -5`) runs
+locally instead, because the CLI is the control plane, not work - one call collects a
+task, instead of a `wait` task that needs a `wait` of its own. Piping into a text
+filter (`head tail grep sed awk cat wc sort uniq cut tr nl jq column`) is part of that;
+anything else in the line puts it back on the capture path, so `cerberus ls && npm run
+build` and `cerberus ls | head -2 && sleep 12` are captured like any other line.
+
 
 A `timeout` on the bash call is the *task's* deadline in capture mode, not this
 call's - the tool always gives up after the budget. If the deadline is shorter than

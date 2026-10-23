@@ -512,22 +512,40 @@ export function invokesGate(command: string): boolean {
 }
 
 /**
- * True when the line is *nothing but* the gate's own CLI: every simple command in it
- * is `cerberus ...` (`cerberus wait 42`, `cerberus ls`, `'.../bin/cerberus' log 42`).
+ * Commands that only read text and pass it on, so piping the CLI's own output into
+ * one of them is still the control plane (`cerberus wait 42 | tail -5`).
+ */
+export const TEXT_FILTERS = new Set([
+  "head", "tail", "grep", "sed", "awk", "cat", "wc", "sort", "uniq", "cut", "tr", "nl", "jq", "column",
+]);
+
+/**
+ * True when the line is the gate's own CLI and nothing else: it *starts* with
+ * `cerberus ...` (`cerberus wait 42`, `cerberus ls`, `'.../bin/cerberus' log 42`), and
+ * what follows is only the CLI again (`cerberus ls; cerberus rc 42`) or a pure text
+ * filter (`cerberus wait 42 | tail -12`, `cerberus log 42 | grep err | head -5`).
  * The capture path runs such a line locally, like the gate does - `wait` is how a task
  * is collected, so staging it would make it wait on itself.
  *
- * One command that is not `cerberus` is enough to disqualify the whole line
- * (`cerberus ls && npm run build`, `echo hi && cerberus ls`): that line does real
- * work, and the exemption must not become a way around the capture path.
+ * The first command has to be the CLI: `grep err | cerberus log 42` reads the pipe
+ * rather than the task. And anything else in the line disqualifies it
+ * (`cerberus ls && npm run build`, `cerberus ls | head -2 && sleep 12`,
+ * `echo hi && cerberus ls`): that line does real work, and the exemption must not
+ * become a way around the capture path.
  */
 export function onlyInvokesGate(command: string): boolean {
   let seen = false;
   for (const simple of splitCommands(command)) {
     const { target } = unwrap(simple.argv);
     if (target.length === 0) continue;
-    if (basename(target[0]) !== "cerberus") return false;
-    seen = true;
+    const exec = basename(target[0]);
+    if (!seen) {
+      if (exec !== "cerberus") return false;
+      seen = true;
+      continue;
+    }
+    // A second CLI call is still control surface; anything else has to be a filter.
+    if (exec !== "cerberus" && !TEXT_FILTERS.has(exec)) return false;
   }
   return seen;
 }

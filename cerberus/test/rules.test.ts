@@ -5,7 +5,7 @@
  *   node cerberus/test/rules.test.ts
  */
 import assert from "node:assert/strict";
-import { invokesGate, isBackgrounded, needsLongRun, onlyInvokesGate, splitCommands } from "../rules.ts";
+import { invokesGate, isBackgrounded, needsLongRun, onlyInvokesGate, splitCommands, TEXT_FILTERS } from "../rules.ts";
 
 const HITS: Array<[string, string]> = [
   ["sleep >= 15", "sleep 15"],
@@ -318,12 +318,29 @@ for (const [label, command] of MISSES) {
   // The quoted command is one argv token, so this is still only the CLI itself.
   assert.equal(onlyInvokesGate("cerberus bg 'sleep 900'"), true);
 
+  // Piping the CLI's own output into a text filter stays control surface: the
+  // reported `cerberus wait ... 2>&1 | tail -12` was captured, which nested `wait`.
+  assert.equal(onlyInvokesGate(`cerberus wait X --for 300 2>&1 | tail -12`), true);
+  assert.equal(onlyInvokesGate("cerberus wait 42 | tail -5"), true);
+  assert.equal(onlyInvokesGate("cerberus log X | grep err"), true);
+  assert.equal(onlyInvokesGate("cerberus ls | wc -l"), true);
+  assert.equal(onlyInvokesGate("cerberus log 42 | head -5 | tail -1"), true);
+  assert.equal(onlyInvokesGate("cerberus log 42 | awk '{print $2}' | sort -u"), true);
+  assert.equal(onlyInvokesGate("cerberus wait 42 | grep -c err | nl"), true);
+  for (const filter of TEXT_FILTERS) {
+    assert.equal(onlyInvokesGate(`cerberus ls | ${filter}`), true, `${filter} is a text filter`);
+  }
+
   // One real command anywhere puts the whole line back on the capture path.
   assert.equal(onlyInvokesGate("cerberus ls && sleep 12"), false);
   assert.equal(onlyInvokesGate("echo hi && cerberus ls"), false);
   assert.equal(onlyInvokesGate("cerberus fg 42 && npm test"), false);
   assert.equal(onlyInvokesGate("cd /tmp && cerberus ls"), false);
-  assert.equal(onlyInvokesGate("cerberus log 42 | head -5"), false);
+  assert.equal(onlyInvokesGate("cerberus log 42 | tee out.txt"), false, "tee writes files");
+  assert.equal(onlyInvokesGate("cerberus log 42 | xargs rm"), false, "and rm is not a filter");
+  assert.equal(onlyInvokesGate("cerberus ls | head -2 && sleep 12"), false);
+  assert.equal(onlyInvokesGate("tail -5 | cerberus wait 42"), false, "the CLI has to come first");
+  assert.equal(onlyInvokesGate("grep err | cerberus log 42"), false);
   assert.equal(onlyInvokesGate("cerberus bg 'sleep 900'; sleep 900"), false);
   assert.equal(onlyInvokesGate("npm test"), false);
   assert.equal(onlyInvokesGate(""), false);
