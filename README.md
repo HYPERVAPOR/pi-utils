@@ -78,29 +78,37 @@ The shim is created on install, not on `pi update`: updating only fetches the cl
 it runs no scripts. `-e` users (a checkout or a profile) never install, so they need
 `cerberus shim` once.
 
-Three modes, switched at runtime and **per session**: `/cerberus on|off|disabled`
-or `cerberus mode on|off|disabled` changes the session you are in, `/cerberus default
-<mode>` (or `cerberus mode <mode> --default`) changes what every other session gets.
-`/cerberus status` and `cerberus mode status` print the effective mode and where it
-came from (`session` or `default`).
+Two modes, switched at runtime and **per session**: `/cerberus on|off` or
+`cerberus mode on|off` changes the session you are in, `/cerberus default <on|off>` (or
+`cerberus mode <on|off> --default`) changes what every other session gets.
+`/cerberus status` and `cerberus mode status` print the effective mode and where it came
+from (`session` or `default`). `capture` and `disabled` are accepted as aliases for
+scripts, and `gate` is refused with a hint (see the retired gate below).
+
+| word | mode | a bash call |
+|---|---|---|
+| `on` (alias `capture`) | `capture` | runs under cerberus: 10s budget, a `still running` notice when slower |
+| `off` (alias `disabled`, the default) | `disabled` | cerberus does nothing; plain pi |
 
 ```json
-{ "default": "gate", "sessions": { "<session id>": "capture" } }
+{ "default": "disabled", "sessions": { "<session id>": "capture" } }
 ```
 
 is `$XDG_STATE_HOME/cerberus/config.json`: the session entry wins, then `default`, then
-the built-in `gate` - so two panes can run different modes at the same time. It is
-read on every tool call and every gate check, so a flip needs no restart, and an old
-`{"mode": "capture"}` file is read as the new `default`. `gate` (below) is the default.
+the built-in `disabled` - so two panes can run different modes at the same time. It is
+read on every tool call, so a flip needs no restart. Two older shapes are still read: an
+old `{"mode": "capture"}` file is the new `default`, and a file that says `gate`
+anywhere reads as `disabled` - a retired gate must not start capturing behind the user's
+back. Reading never rewrites the file; the next write stores the migrated value.
 
-In the TUI this session's mode sits beside the editor as `cerberus:capture`,
-`cerberus:gate` or `cerberus:disabled`, coloured by mode. Double-click it to cycle
-capture → gate → disabled for this session (a single click does nothing on purpose);
-it re-reads the config every couple of seconds and after every `/cerberus`, so a switch
-made in another pane shows up here too. The indicator shares one status line with other
-plugins that speak the same contract (`extensions/status-row.ts`): one widget key, parts
-laid out left to right, each keeping its own clicks - and it falls back to a line of its
-own when pi-tui has no `HStack`.
+In the TUI this session's mode sits beside the editor as `cerberus:on` or
+`cerberus:off`, coloured by mode. Double-click it to toggle (`off` → `on` → `off`) for
+this session; a single click does nothing on purpose. It re-reads the config every
+couple of seconds and after every `/cerberus`, so a switch made in another pane shows up
+here too. The indicator shares one status line with other plugins that speak the same
+contract (`extensions/status-row.ts`): one widget key, parts laid out left to right, each
+keeping its own clicks - and it falls back to a line of its own when pi-tui has no
+`HStack`.
 
 **`capture` (`/cerberus on`)** replaces the built-in `bash` tool with the same
 definition - pi's own `createBashToolDefinition`, so schema, description, truncation
@@ -113,7 +121,8 @@ task and the tool result is one line:
 `CERBERUS_CAPTURE_BUDGET_MS`. `cerberus wait <id>` then prints what pi would have
 returned - the same truncation (last 2000 lines / 50KB), the same notice, and the
 task's `out.log` where pi's temp file would be. Cancelling the call stops the task.
-In this mode the gate below is a no-op: no rules, no questions.
+In this mode the gate below is a no-op: no rules, no questions. It is turned off
+anyway while the gate is retired, so this is the only mode that runs anything.
 
 One exception: a line that *starts* with the CLI itself (`cerberus wait <id>`,
 `cerberus ls`, `'.../bin/cerberus' log <id>`, and `cerberus wait <id> | tail -5`) runs
@@ -131,12 +140,15 @@ the budget, the task is killed at the deadline and the result is pi's usual
 budget, the model gets `still running` first; the supervisor kills the task when the
 deadline comes, so `cerberus wait`/`rc` report rc 124 later.
 
-**`disabled` (`/cerberus disabled`)**: cerberus out of the way - no capture, no rules,
-no questions, no tasks. The `bash` tool is pi's own, unchanged, and a long command is
-just a long command.
+**`disabled` (`/cerberus off`, the default)**: cerberus out of the way - no capture, no
+rules, no questions, no tasks. The `bash` tool is pi's own, unchanged, and a long command
+is just a long command.
 
-**`gate` (`/cerberus off`, the default)**: a gate in front of `bash`. Ordinary
-commands pass through byte-for-byte, and a
+**`gate` (retired)**: the mode that used to be the default is off for now - one constant,
+`GATE_ENABLED` in `extensions/cerberus.ts`, turns it back on, and nothing else was
+removed: `rules.ts`, the question flow, the decision memory, `cerberus fg|bg` and the
+tests all still sit behind it (those tests are skipped while it is off). What it was: a
+gate in front of `bash`. Ordinary commands pass through byte-for-byte, and a
 small conservative rule table (package builds/tests, `sleep` >= 15s, `tail -f`,
 `docker build`, `git push`, ...) catches only commands that look likely to block.
 It looks through wrappers and runners (`timeout`, `sudo`, `env`, `bash -c`,

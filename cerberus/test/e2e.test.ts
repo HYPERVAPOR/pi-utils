@@ -140,7 +140,34 @@ const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\
 
 let liveTaskId = "";
 let liveOwner = "";
+
+/**
+ * The gate is retired (`extensions/cerberus.ts`, `GATE_ENABLED = false`), and this
+ * suite *is* the gate's chain: every case below asks what `tool_call` does with a long
+ * command. They are skipped visibly, not deleted - flipping that constant runs them
+ * again. The body keeps its indentation so the retirement diff stays readable.
+ */
+const GATE_ON: boolean = extension.GATE_ENABLED;
+const GATE_GROUPS = [
+  "other tools are untouched",
+  "non-hits pass through byte-for-byte",
+  "a bash timeout is a budget, not an exemption",
+  "timeout / nohup / setsid / keywords do not create an exemption",
+  "`cerberus` / the absolute BIN is expanded, never gated",
+  "hit: block, save exact bytes, do not execute, do not terminate",
+  "fg is the yes button: one run, then consumed",
+  "bg is the no button; a remembered bg is started by the gate",
+  "the staged key includes cwd",
+  "`bash -c` bodies are gated too",
+  "a staged task already asked twice is let through",
+  "no owner: fail open, never block",
+  "the real chain: question -> bg -> ls/log/rc/stop",
+];
+
 try {
+if (!GATE_ON) {
+  for (const name of GATE_GROUPS) console.log(`SKIP  e2e: ${name} (gate is retired: GATE_ENABLED = false)`);
+} else {
   // --- other tools are untouched -----------------------------------------
   {
     const { event, result } = await callBash("/tmp/a.ts", { tool: "read" });
@@ -575,6 +602,7 @@ try {
     assert.match(rc ?? "", /^(143|137)$/);
     assert.equal(cli(["rc", liveTaskId, "--owner", liveOwner], liveOwner).stdout.trim(), rc);
   }
+}
 } finally {
   if (liveTaskId && liveOwner) {
     cli(["stop", liveTaskId, "--owner", liveOwner, "--force"], liveOwner);

@@ -18,16 +18,14 @@ const { readMode, writeMode } = await import("../../../cerberus/paths.ts");
 
 // --- the text and the order are the contract -------------------------------
 {
-  assert.equal(indicatorText("capture"), "cerberus:capture");
-  assert.equal(indicatorText("gate"), "cerberus:gate");
-  assert.equal(indicatorText("disabled"), "cerberus:disabled");
+  assert.equal(indicatorText("capture"), "cerberus:on");
+  assert.equal(indicatorText("disabled"), "cerberus:off");
   for (const mode of ORDER) assert.ok(indicatorText(mode).length <= 24, `${mode} fits in 24 columns`);
   assert.equal(WIDGET_KEY, "cerberus");
-  assert.deepEqual([...ORDER], ["capture", "gate", "disabled"]);
+  assert.deepEqual([...ORDER], ["capture", "disabled"], "two modes");
 
-  assert.equal(cycleMode("capture"), "gate");
-  assert.equal(cycleMode("gate"), "disabled");
-  assert.equal(cycleMode("disabled"), "capture", "the cycle wraps");
+  assert.equal(cycleMode("capture"), "disabled", "a double click turns it off");
+  assert.equal(cycleMode("disabled"), "capture", "and on again");
 }
 
 /** A theme that shows the colour name instead of an escape sequence. */
@@ -58,43 +56,41 @@ const click = (button = "left", clickCount = 2) => ({ type: "click", button, cli
 
 // --- render follows the mode, and never reads the disk itself --------------
 {
-  let shown: "capture" | "gate" | "disabled" = "capture";
+  let shown: "capture" | "disabled" = "capture";
   const indicator = createIndicator({ mode: () => shown, cycle: () => {}, notify: () => {} });
   const tui = fakeTui();
   const component = indicator(tui, theme);
 
-  assert.deepEqual(component.render(80), ["success|cerberus:capture"]);
+  assert.deepEqual(component.render(80), ["success|cerberus:on"]);
   assert.equal(tui.seen.renders, 0, "rendering is not a reason to repaint");
 
-  shown = "gate";
-  assert.deepEqual(component.render(80), ["warning|cerberus:gate"]);
   shown = "disabled";
-  assert.deepEqual(component.render(80), ["dim|cerberus:disabled"]);
+  assert.deepEqual(component.render(80), ["dim|cerberus:off"]);
 
   // A narrow editor: the label is cut, never wider than what is offered.
-  for (const width of [0, 5, 12, 16]) {
+  for (const width of [0, 5, 9, 16]) {
     const [line] = component.render(width);
-    assert.equal(line.split("|")[1].length, Math.min(width, "cerberus:disabled".length), `width ${width}`);
+    assert.equal(line.split("|")[1].length, Math.min(width, "cerberus:off".length), `width ${width}`);
   }
 }
 
 // --- this session's value only --------------------------------------------
 {
-  writeMode("gate");
+  writeMode("disabled");
   writeMode("capture", "sess-a");
-  writeMode("disabled", "sess-b");
+  writeMode("capture", "sess-b");
   // What the extension does: refresh the cached value, then repaint.
   let shown = readMode("sess-a");
   const component = createIndicator({ mode: () => shown, cycle: () => {}, notify: () => {} })(fakeTui(), theme);
-  assert.deepEqual(component.render(80), ["success|cerberus:capture"]);
+  assert.deepEqual(component.render(80), ["success|cerberus:on"]);
 
-  writeMode("gate", "sess-b");
+  writeMode("disabled", "sess-b");
   shown = readMode("sess-a");
-  assert.deepEqual(component.render(80), ["success|cerberus:capture"], "another session's switch does not leak in");
+  assert.deepEqual(component.render(80), ["success|cerberus:on"], "another session's switch does not leak in");
 
   writeMode("disabled", "sess-a");
   shown = readMode("sess-a");
-  assert.deepEqual(component.render(80), ["dim|cerberus:disabled"], "and following its own does work");
+  assert.deepEqual(component.render(80), ["dim|cerberus:off"], "and following its own does work");
 }
 
 // --- clicks: only a double click cycles, and a failure is reported ---------
@@ -142,8 +138,8 @@ const click = (button = "left", clickCount = 2) => ({ type: "click", button, cli
 
 // --- without the TUI package the indicator still renders, it just cannot click
 {
-  const component = createIndicator({ mode: () => "gate", cycle: () => {}, notify: () => {} })(fakeTui(), theme);
-  assert.deepEqual(component.render(80), ["warning|cerberus:gate"]);
+  const component = createIndicator({ mode: () => "disabled", cycle: () => {}, notify: () => {} })(fakeTui(), theme);
+  assert.deepEqual(component.render(80), ["dim|cerberus:off"]);
   assert.equal((component as any).handleMouse, undefined, "no mouse region, no handler");
   assert.equal(typeof component.dispose, "undefined", "and nothing to dispose");
 }
@@ -154,7 +150,7 @@ const click = (button = "left", clickCount = 2) => ({ type: "click", button, cli
   let cycles = 0;
   const tui = fakeTui();
   const component = createIndicator({
-    mode: () => "gate",
+    mode: () => "disabled",
     cycle: () => void cycles++,
     notify: () => {},
     MouseRegion: fake.Region,

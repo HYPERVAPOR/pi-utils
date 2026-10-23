@@ -32,6 +32,8 @@ const {
   readRc,
   RETENTION_BYTES,
   configPath,
+  migrateMode,
+  MODES,
   modeSource,
   readConfig,
   readMode,
@@ -265,9 +267,10 @@ process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), "cerberus-size-"));
 {
   // Another block moved the state root; the config lives under the real one.
   process.env.XDG_STATE_HOME = root;
-  assert.equal(readMode(), "gate", "built-in default");
-  assert.equal(readMode("sess-1"), "gate");
+  assert.equal(readMode(), "disabled", "cerberus is off until asked");
+  assert.equal(readMode("sess-1"), "disabled");
   assert.equal(modeSource("sess-1"), "default");
+  assert.deepEqual([...MODES], ["capture", "disabled"], "two modes");
 
   // Pre-v2.1 `{"mode": ...}` was the whole machine's mode: it is the default now.
   writeFileSync(configPath(), JSON.stringify({ mode: "capture" }));
@@ -284,19 +287,47 @@ process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), "cerberus-size-"));
   assert.equal(modeSource("sess-2"), "default");
   assert.deepEqual(readConfig(), { default: "capture", sessions: { "sess-1": "disabled" } });
 
-  writeMode("gate");
-  assert.equal(readMode(), "gate", "the default changed, the session entry did not");
+  writeMode("capture");
+  assert.equal(readMode(), "capture", "the default changed, the session entry did not");
   assert.equal(readMode("sess-1"), "disabled");
   assert.deepEqual(JSON.parse(readFileSync(configPath(), "utf8")), {
-    default: "gate",
+    default: "capture",
     sessions: { "sess-1": "disabled" },
   });
 
   // Junk in the file is ignored rather than trusted.
-  writeFileSync(configPath(), JSON.stringify({ default: "nonsense", sessions: { a: "bogus", b: "gate" } }));
-  assert.deepEqual(readConfig(), { default: "gate", sessions: { b: "gate" } }, "bad entries dropped");
+  writeFileSync(configPath(), JSON.stringify({ default: "nonsense", sessions: { a: "bogus", b: "capture" } }));
+  assert.deepEqual(readConfig(), { default: "disabled", sessions: { b: "capture" } }, "bad entries dropped");
   writeFileSync(configPath(), "not json at all");
-  assert.deepEqual(readConfig(), { default: "gate", sessions: {} });
+  assert.deepEqual(readConfig(), { default: "disabled", sessions: {} });
+  rmSync(configPath(), { force: true });
+}
+
+// --- config: the retired `gate` reads as `disabled`, and is rewritten ------
+{
+  process.env.XDG_STATE_HOME = root;
+  // The whole machine and one session were on the retired gate.
+  writeFileSync(configPath(), JSON.stringify({ default: "gate", sessions: { "sess-1": "gate", "sess-2": "capture" } }));
+  assert.deepEqual(readConfig(), { default: "disabled", sessions: { "sess-1": "disabled", "sess-2": "capture" } });
+  assert.equal(readMode(), "disabled", "a retired gate does not start capturing");
+  assert.equal(readMode("sess-1"), "disabled");
+  assert.equal(modeSource("sess-1"), "session", "it was a per-session answer, it stays one");
+  assert.equal(readMode("sess-2"), "capture");
+
+  // Reading is enough to migrate; the next write persists it. Nothing rewrites the
+  // file behind the user's back, so until then it still says "gate".
+  assert.equal(JSON.parse(readFileSync(configPath(), "utf8")).default, "gate");
+  writeMode("capture", "sess-2");
+  const written = readFileSync(configPath(), "utf8");
+  assert.equal(written.includes('"gate"'), false, "no retired word is ever written again");
+  assert.deepEqual(JSON.parse(written), { default: "disabled", sessions: { "sess-1": "disabled", "sess-2": "capture" } });
+
+  // `migrateMode` is the one place that mapping lives.
+  assert.equal(migrateMode("gate"), "disabled");
+  assert.equal(migrateMode("capture"), "capture");
+  assert.equal(migrateMode("disabled"), "disabled");
+  assert.equal(migrateMode("nonsense"), undefined);
+  assert.equal(migrateMode(undefined), undefined);
   rmSync(configPath(), { force: true });
 }
 

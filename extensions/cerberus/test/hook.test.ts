@@ -35,6 +35,15 @@ const extension = await import("../../cerberus.ts");
 // What the prompt/tool result actually prints: a bare `cerberus` when the shim on
 // PATH points back at this file, an absolute (quoted) path otherwise.
 const SHOWN: string = extension.SHOWN_BIN;
+// The gate is retired: `GATE_ENABLED` in the extension is false, so nothing can reach
+// the question flow. Its cases are skipped *visibly* rather than deleted - flip that
+// constant to true and they run again.
+const GATE_ON: boolean = extension.GATE_ENABLED;
+let skipped = 0;
+const skip = (name: string) => {
+  skipped++;
+  console.log(`SKIP  ${name} (gate is retired: GATE_ENABLED = false)`);
+};
 await (extension.default as (pi: unknown) => Promise<void>)(fakePi);
 
 assert.equal(typeof handlers.tool_call, "function");
@@ -57,7 +66,6 @@ assert.equal(typeof handlers.session_shutdown, "function");
     [
       { value: "on", label: "on" },
       { value: "off", label: "off" },
-      { value: "disabled", label: "disabled" },
       { value: "status", label: "status" },
       { value: "default", label: "default" },
     ],
@@ -119,7 +127,8 @@ async function waitFor(predicate: () => boolean, ms: number): Promise<boolean> {
 
 try {
   // --- tool_call: the gate's own CLI is never gated ------------------------
-  {
+  if (!GATE_ON) skip("tool_call: the gate's own CLI is never gated");
+  else {
     const call = async (owner: string, command: string) => {
       const event: any = { type: "tool_call", toolName: "bash", input: { command } };
       const result = await handlers.tool_call(event, context(owner));
@@ -160,7 +169,10 @@ try {
   }
 
   // --- before_agent_start: static section + guideline ---------------------
-  {
+  // The section describes the gate's question, so it is only added while the gate is
+  // on; the case for it is skipped with the gate's other cases.
+  if (!GATE_ON) skip("before_agent_start: static section + guideline");
+  else {
     const options = () => ({
       selectedTools: [],
       hiddenTools: [],
@@ -223,45 +235,43 @@ try {
       commands.cerberus.handler(args, { ...context(owner), ui: { notify: (text: string) => messages.push(text) } });
 
     await switchTo("status");
-    assert.deepEqual(messages, ["cerberus: mode gate (default)"], "gate is the default");
+    assert.deepEqual(messages, ["cerberus: mode off (default)"], "off is the default");
 
     await switchTo("on");
     assert.equal(readMode("hook-switch"), "capture", "/cerberus on persists capture for this session");
-    assert.equal(messages.at(-1), "cerberus: mode capture (session hook-switch)");
+    assert.equal(messages.at(-1), "cerberus: mode on (session hook-switch)");
     await switchTo("status");
-    assert.equal(messages.at(-1), "cerberus: mode capture (session hook-switch)");
+    assert.equal(messages.at(-1), "cerberus: mode on (session hook-switch)");
 
     const silent: any = { type: "tool_call", toolName: "bash", input: { command: "sleep 20" } };
     assert.equal(await handlers.tool_call(silent, context("hook-switch")), undefined, "capture mode asks nothing");
     assert.deepEqual(listOwner("hook-switch"), [], "capture mode stages nothing");
 
-    // Another session is untouched: it still gets the gate.
+    // Another session is untouched: it still reads the default.
     await switchTo("status", "hook-other");
-    assert.equal(messages.at(-1), "cerberus: mode gate (default)", "the switch is per session");
-    const askedOther = await handlers.tool_call(
-      { type: "tool_call", toolName: "bash", input: { command: "sleep 20" } },
-      context("hook-other"),
-    );
-    assert.equal(askedOther.block, true, "the other session still asks");
+    assert.equal(messages.at(-1), "cerberus: mode off (default)", "the switch is per session");
 
+    // `off` is cerberus out of the way: no question, no task, not even the CLI
+    // expansion - the tool itself runs pi's own bash. (With the gate enabled `off` is
+    // the old gate again; the loop at the end of this block covers both.)
     await switchTo("off");
-    assert.equal(readMode("hook-switch"), "gate");
-    const asked = await handlers.tool_call(
-      { type: "tool_call", toolName: "bash", input: { command: "sleep 20" } },
-      context("hook-switch"),
-    );
-    assert.equal(asked.block, true, "gate mode asks for a long command again");
-    assert.match(asked.reason, /^cerberus: this may block/);
-
-    // `disabled` is cerberus out of the way: no question, no task, not even the CLI
-    // expansion - the tool itself runs pi's own bash.
-    await switchTo("disabled");
     assert.equal(readMode("hook-switch"), "disabled");
-    for (const command of ["sleep 20", "npm install", "cerberus ls"]) {
-      const event: any = { type: "tool_call", toolName: "bash", input: { command } };
-      assert.equal(await handlers.tool_call(event, context("hook-switch")), undefined, `${command}: nothing asked`);
-      assert.equal(event.input.command, command, `${command}: left exactly as it was`);
+    assert.equal(messages.at(-1), "cerberus: mode off (session hook-switch)");
+    if (!GATE_ON) {
+      for (const command of ["sleep 20", "npm install", "cerberus ls"]) {
+        const event: any = { type: "tool_call", toolName: "bash", input: { command } };
+        assert.equal(await handlers.tool_call(event, context("hook-switch")), undefined, `${command}: nothing asked`);
+        assert.equal(event.input.command, command, `${command}: left exactly as it was`);
+      }
     }
+
+    // `gate` is retired: refused with a hint, and nothing is written.
+    messages.length = 0;
+    await switchTo("gate");
+    assert.equal(readMode("hook-switch"), "disabled", "a retired word changes nothing");
+    assert.deepEqual(messages, ["cerberus: gate is retired (use on or off)"]);
+    await switchTo("default gate");
+    assert.deepEqual(messages.at(-1), "cerberus: gate is retired (use on or off)");
 
     // `default <mode>` moves every session that has no entry of its own.
     await switchTo("default on");
@@ -269,13 +279,28 @@ try {
     assert.equal(readMode("hook-other"), "capture", "the default follows");
     assert.equal(readMode("hook-switch"), "disabled", "an explicit entry still wins");
     await switchTo("default off");
-    assert.equal(readMode("hook-other"), "gate");
+    assert.equal(readMode("hook-other"), "disabled");
     await switchTo("default bogus");
     assert.match(messages.at(-1), /default: unknown argument/);
 
     await switchTo("bogus");
     assert.equal(readMode("hook-switch"), "disabled", "an unknown word changes nothing");
     assert.match(messages.at(-1), /unknown argument/);
+
+    // With the gate retired, no mode at all can produce a question: `on` is capture,
+    // `off` is inert. Flip GATE_ENABLED and `off` asks the old question again.
+    for (const word of ["on", "off"]) {
+      await switchTo(word);
+      const event: any = { type: "tool_call", toolName: "bash", input: { command: "sleep 20" } };
+      const answer = (await handlers.tool_call(event, context("hook-switch"))) as any;
+      if (GATE_ON && word === "off") {
+        assert.equal(answer?.block, true, "with the gate on, off asks again");
+        assert.match(answer.reason, /^cerberus: this may block/);
+        continue;
+      }
+      assert.equal(answer, undefined, `${word}: no question`);
+      assert.deepEqual(listOwner("hook-switch"), [], `${word}: nothing staged`);
+    }
   }
 
   // --- the mode indicator: a widget beside the editor, per session --------
@@ -315,7 +340,7 @@ try {
       assert.equal(live.size, 0, "and starts no timer");
 
       const owner = "ind-a";
-      writeMode("gate");
+      writeMode("disabled");
       writeMode("capture", owner);
       const ctx = indicatorCtx(owner);
       await handlers.session_start({ type: "session_start" }, ctx);
@@ -333,7 +358,7 @@ try {
       const plain = (line: string) =>
         line.replace(/\x1B\[[0-9;]*m/g, "").replace(/\x1B\]8;;\x07/g, "").trimEnd();
       const shown = () => component.render(80).map(plain);
-      assert.deepEqual(shown(), ["success|cerberus:capture"]);
+      assert.deepEqual(shown(), ["success|cerberus:on"]);
       const clickAt = (x: number, clickCount = 2) => ({
         type: "click", button: "left", clickCount, x, y: 0, width: 80, height: 1,
         screenX: x, screenY: 0, shift: false, alt: false, ctrl: false,
@@ -342,25 +367,26 @@ try {
       // Another session's switch does not leak in; this one's follows on the next tick.
       writeMode("disabled", "ind-b");
       tickers[0]();
-      assert.deepEqual(shown(), ["success|cerberus:capture"], "session b's mode stays on session b");
-      writeMode("gate", owner);
+      assert.deepEqual(shown(), ["success|cerberus:on"], "session b's mode stays on session b");
+      writeMode("disabled", owner);
       tickers[0]();
-      assert.deepEqual(shown(), ["warning|cerberus:gate"], "the timer picks up this session's mode");
+      assert.deepEqual(shown(), ["dim|cerberus:off"], "the timer picks up this session's mode");
+      writeMode("capture", owner);
+      tickers[0]();
 
       // /cerberus repaints without waiting for a tick.
       await commands.cerberus.handler("on", { ...ctx, ui: { notify: (text: string) => notes.push(text) } });
-      assert.deepEqual(shown(), ["success|cerberus:capture"], "the command refreshes the indicator");
+      assert.deepEqual(shown(), ["success|cerberus:on"], "the command refreshes the indicator");
       assert.equal(readMode(owner), "capture");
 
-      // A double click cycles capture -> gate -> disabled -> capture, and notifies.
+      // A double click toggles on -> off -> on, and notifies with the word.
       notes.length = 0;
       component.handleMouse(clickAt(2));
-      assert.equal(readMode(owner), "gate", "a double click writes this session's mode");
-      assert.deepEqual(shown(), ["warning|cerberus:gate"]);
-      assert.deepEqual(notes, [`cerberus: mode gate (session ${owner})`]);
-      component.handleMouse(clickAt(2));   // gate -> disabled
-      component.handleMouse(clickAt(2));   // disabled -> capture
-      assert.equal(readMode(owner), "capture", "the cycle wraps");
+      assert.equal(readMode(owner), "disabled", "a double click turns it off for this session");
+      assert.deepEqual(shown(), ["dim|cerberus:off"]);
+      assert.deepEqual(notes, [`cerberus: mode off (session ${owner})`]);
+      component.handleMouse(clickAt(2));
+      assert.equal(readMode(owner), "capture", "and on again");
       // A single click does nothing, and so does a click past the indicator.
       component.handleMouse(clickAt(2, 1));
       assert.equal(readMode(owner), "capture", "a single click is not a mode change");
@@ -382,7 +408,7 @@ try {
       assert.equal(live.size, 1);
       await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, indicatorCtx(owner));
       assert.equal(live.size, 0);
-      writeMode("gate");
+      writeMode("disabled");
     } finally {
       (globalThis as any).setInterval = realSet;
       (globalThis as any).clearInterval = realClear;
