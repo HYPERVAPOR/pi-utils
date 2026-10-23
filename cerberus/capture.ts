@@ -27,11 +27,11 @@
  *   timeout >= budget: the model gets `still running` first and keeps a task handle;
  *                      the supervisor still kills it at the deadline (rc 124).
  *
- * Lines that are nothing but the gate's own CLI (`cerberus wait 42`, `cerberus ls`)
- * also run locally, via pi's own operations: they are the control plane, not work, and
- * capturing `wait` would make it wait on a task of itself. See `onlyInvokesGate` in
- * `rules.ts` - one command that is not `cerberus` puts the whole line back on the
- * capture path.
+ * Lines that start with the gate's own CLI (`cerberus wait 42`, `cerberus ls`, and
+ * `cerberus wait 42 | tail -5`) also run locally, via pi's own operations: they are the
+ * control plane, not work, and capturing `wait` would make it wait on a task of itself.
+ * See `onlyInvokesGate` in `rules.ts` - a real command anywhere in the line puts the
+ * whole line back on the capture path.
  *
  * In `gate` and `disabled` modes nothing here happens: the call goes straight to pi's
  * own `createLocalBashOperations`, so the gate keeps behaving exactly as before and

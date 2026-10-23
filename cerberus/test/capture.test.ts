@@ -305,6 +305,19 @@ try {
     }
     assert.match(textOf(await run(ours, owner, `${BIN} log ${id} --owner ${owner}`)), /twentyfive/, "log still reads it");
     delete process.env[capture.BUDGET_ENV];
+
+    // Piping the CLI into a text filter is still control surface - the reported
+    // `cerberus wait <id> 2>&1 | tail -12` was captured and nested `wait` again.
+    const lines = "sleep 1.2; printf 'a\\nb\\nc\\nd\\n'";
+    process.env[capture.BUDGET_ENV] = "300";
+    const second = textOf(await run(ours, owner, lines));
+    assert.match(second, /^cerberus: still running id=\S+/, "another task to collect");
+    const secondId = second.match(/id=(\S+)/)?.[1] as string;
+    const piped = await run(ours, owner, `${BIN} wait ${secondId} --owner ${owner} --for 30 2>&1 | tail -3`);
+    assert.equal(textOf(piped), "b\nc\nd\n", "one call, and the pipe really filtered");
+    assert.equal(piped.structuredContent.exit_code, 0);
+    assert.doesNotMatch(textOf(piped), /still running/, "no nested notice");
+    assert.equal(paths.listOwner(owner).length, 2, "two tasks, no `wait` task");
   }
 
   // --- E2: one real command in the line puts it back on the capture path ---
@@ -317,7 +330,7 @@ try {
       ["cerberus ls && sleep 12", `${BIN} ls && sleep 1`],
       ["echo hi && cerberus ls", `echo hi && ${BIN} ls`],
       ["cerberus ls && npm run build", `${BIN} ls && sleep 1`],
-      ["cerberus log 42 | head -5", `${BIN} log 1 | head -5`],
+      ["cerberus log 42 | tee out", `${BIN} log 1 | tee ${join(work, "out.txt")}`],
     ];
     for (const [shape, command] of cases) {
       const result = await run(ours, owner, command);
