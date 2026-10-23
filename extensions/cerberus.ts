@@ -1,12 +1,20 @@
 /**
- * cerberus - gate the few bash commands that look long-running.
+ * cerberus - capture every bash command, or ask before the few that look long.
  *
- * The gate never rewrites an ordinary command. Only when `rules.ts` flags a command
- * (and the command does not already background itself) does it stop the call before
- * execution and ask one question with two answers:
+ * Two modes, picked with `/cerberus on|off|status` (or `cerberus mode ...`) and stored
+ * in `$XDG_STATE_HOME/cerberus/config.json`, read once per tool call:
  *
- *   BIN fg <id>  runs the saved command in the foreground (streamed, exit code)
- *   BIN bg <id>  runs it in the background, output in a log
+ * `capture` (on) - cerberus replaces pi's `bash` tool with the same definition built on
+ *   its own operations (`cerberus/capture.ts`). Every command runs under the task
+ *   supervisor; whatever finishes inside the budget comes back byte-identically, and a
+ *   command that outlives it keeps running while the model gets one line to act on.
+ *
+ * `gate` (off, the default) - the gate never rewrites an ordinary command. Only when
+ *   `rules.ts` flags a command (and the command does not already background itself)
+ *   does it stop the call before execution and ask one question with two answers:
+ *
+ *     BIN fg <id>  runs the saved command in the foreground (streamed, exit code)
+ *     BIN bg <id>  runs it in the background, output in a log
  *
  * A `timeout` on the bash call is not an exemption: it only bounds the foreground
  * run that pi does after a pass-through. The gate preserves it untouched.
@@ -26,11 +34,16 @@ import {
   cmdHash,
   findStaged,
   readDecision,
+  readMode,
   writeDecision,
   writeMeta,
+  writeMode,
+  type Mode,
   type Task,
   type TaskMeta,
 } from "../cerberus/paths.ts";
+import { createOperations, runningNotice, SlowTask } from "../cerberus/capture.ts";
+import { loadPiBash } from "../cerberus/pi-package.ts";
 import { isBackgrounded, needsLongRun, SHELL_KEYWORDS } from "../cerberus/rules.ts";
 import { backgroundBanner, startBackground } from "../cerberus/runner.ts";
 
@@ -214,6 +227,8 @@ function startStaged(staged: Staged): { id: string; log: string; rc: string } | 
   return { id: staged.id, ...startBackground(task) };
 }
 
+const MODE_WORDS: Record<string, Mode> = { on: "capture", off: "gate", capture: "capture", gate: "gate" };
+
 function question(id: string): string {
   return [
     "cerberus: this may block for a long time. Nothing has run yet. Answer by running exactly one:",
@@ -224,9 +239,78 @@ function question(id: string): string {
   ].join("\n");
 }
 
-export default function (pi: ExtensionAPI) {
+/**
+ * pi's own bash tool definition with cerberus operations behind it.
+ *
+ * Same factory as the built-in, so name, schema, description, prompt snippet,
+ * truncation and result formatting are the built-in's; only `exec` differs. It is
+ * registered under `bash`, and extension tools are applied after built-ins, so this
+ * one replaces the built-in in the registry (there is still exactly one `bash`).
+ */
+async function registerBash(pi: ExtensionAPI): Promise<void> {
+  const bash = await loadPiBash();
+  const definition = bash.createBashToolDefinition(process.cwd(), {
+    operations: createOperations(bash.createLocalBashOperations()),
+  });
+  const run = definition.execute.bind(definition);
+
+  pi.registerTool({
+    ...definition,
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      try {
+        return await run(toolCallId, params, signal, onUpdate, ctx);
+      } catch (err) {
+        // The command outlived the budget: it keeps running and the model gets one
+        // line it can act on instead of output that does not exist yet.
+        if (err instanceof SlowTask) {
+          return {
+            content: [{ type: "text" as const, text: runningNotice(err.id, SHOWN_BIN) }],
+            details: undefined,
+            isError: false,
+          };
+        }
+        throw err;
+      }
+    },
+  });
+}
+
+function registerModeCommand(pi: ExtensionAPI): void {
+  pi.registerCommand("cerberus", {
+    description: "cerberus mode: on (capture every bash call) | off (ask before long ones) | status",
+    getArgumentCompletions: (prefix: string) =>
+      ["on", "off", "status"].filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
+    handler: async (args, ctx) => {
+      const word = args.trim().toLowerCase();
+      if (word === "" || word === "status") {
+        ctx.ui.notify(`cerberus: mode ${readMode()}`, "info");
+        return;
+      }
+      const mode = MODE_WORDS[word];
+      if (!mode) {
+        ctx.ui.notify(`cerberus: unknown argument "${word}" (use on, off or status)`, "warning");
+        return;
+      }
+      writeMode(mode);
+      ctx.ui.notify(`cerberus: mode ${mode}`, "info");
+    },
+  });
+}
+
+export default async function (pi: ExtensionAPI) {
+  // Without pi's own package there is no capture tool; that must not take the gate
+  // down with it, so the shadowed `bash` is best-effort and everything else loads.
+  try {
+    await registerBash(pi);
+  } catch {
+    // pi keeps its built-in bash; the gate below still works
+  }
+  registerModeCommand(pi);
+
   pi.on("tool_call", async (event, ctx: ExtensionContext) => {
     if (event.toolName !== "bash") return;
+    // `capture` owns every bash call inside the tool itself: no rules, no questions.
+    if (readMode() === "capture") return;
     const original = event.input.command;
     if (typeof original !== "string" || original.length === 0) return;
 

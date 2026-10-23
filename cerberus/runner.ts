@@ -22,6 +22,7 @@ import {
   readFileSync,
   readSync,
   statSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import { constants } from "node:os";
@@ -127,12 +128,16 @@ export function backgroundBanner(id: string, log: string): string {
   return `cerberus: background id=${id} log=${tildify(log)}`;
 }
 
+/**
+ * Task deadlines are whole seconds. A sub-second one rounds up to 1: rounding down
+ * would silently mean "no deadline at all", which is worse than being late by <1s.
+ */
 function positiveSeconds(value: number | undefined): number | undefined {
-  return value !== undefined && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+  return value !== undefined && Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : undefined;
 }
 
 /** Start the supervisor for a claimed task. The task directory must have cmd.sh. */
-export function startBackground(task: Task, timeoutSec?: number): BackgroundStart {
+export function startBackground(task: Task, timeoutSec?: number, env?: NodeJS.ProcessEnv): BackgroundStart {
   const meta = task.meta;
   const startedAt = Date.now();
   if (meta) writeMeta(task.dir, { ...meta, state: "running", startedAt, pid: 0 });
@@ -144,7 +149,13 @@ export function startBackground(task: Task, timeoutSec?: number): BackgroundStar
   try {
     const args = [CLI_PATH, "__supervise", task.dir];
     if (seconds !== undefined) args.push(String(seconds));
-    const child = spawn(process.execPath, args, { detached: true, stdio: ["ignore", fd, fd] });
+    const child = spawn(process.execPath, args, {
+      detached: true,
+      stdio: ["ignore", fd, fd],
+      // The supervisor passes its environment on to the command, so a caller that
+      // resolved a specific one (pi's shell env) gets exactly that.
+      env: env ?? process.env,
+    });
     child.unref();
     pid = child.pid ?? 0;
   } finally {
@@ -312,6 +323,9 @@ export function supervise(dir: string, timeoutSec?: number): Promise<number> {
         ? undefined
         : setTimeout(() => {
             timedOut = true;
+            // A marker file, so a caller that waits for the rc can tell our deadline
+            // from a command that exited 124 itself. It is not out.log.
+            writeFileSync(join(dir, "timedout"), "1");
             // rc first: a SIGKILL that also takes out this supervisor still leaves
             // the outcome behind.
             writeRc(dir, TIMEOUT_RC);

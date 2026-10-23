@@ -19,23 +19,50 @@ const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cerberus");
 
 type Handler = (event: any, ctx: any) => unknown;
 const handlers: Record<string, Handler> = {};
+const tools: any[] = [];
+const commands: Record<string, any> = {};
 const fakePi = {
   on: (name: string, handler: Handler) => {
     handlers[name] = handler;
     return () => {};
+  },
+  registerTool: (tool: any) => tools.push(tool),
+  registerCommand: (name: string, options: any) => {
+    commands[name] = options;
   },
 };
 const extension = await import("../../cerberus.ts");
 // What the prompt/tool result actually prints: a bare `cerberus` when the shim on
 // PATH points back at this file, an absolute (quoted) path otherwise.
 const SHOWN: string = extension.SHOWN_BIN;
-(extension.default as (pi: unknown) => void)(fakePi);
+await (extension.default as (pi: unknown) => Promise<void>)(fakePi);
 
 assert.equal(typeof handlers.tool_call, "function");
 assert.equal(typeof handlers.before_agent_start, "function");
 assert.equal(typeof handlers.session_shutdown, "function");
 
-const { allocateTask, claimTask, cmdHash, writeMeta } = await import("../../../cerberus/paths.ts");
+// --- the bash tool is shadowed, once, with the built-in's own definition ---
+{
+  assert.equal(tools.length, 1, "exactly one tool is registered");
+  const bash = tools[0];
+  assert.equal(bash.name, "bash", "registered under the built-in name");
+  assert.equal(bash.label, "bash");
+  assert.equal(typeof bash.execute, "function");
+  assert.equal(typeof bash.renderResult, "function");
+  assert.deepEqual(Object.keys(bash.parameters.properties), ["command", "timeout"]);
+  assert.ok(commands.cerberus, "the /cerberus switch exists");
+  assert.equal(typeof commands.cerberus.handler, "function");
+  assert.deepEqual(
+    await commands.cerberus.getArgumentCompletions(""),
+    [
+      { value: "on", label: "on" },
+      { value: "off", label: "off" },
+      { value: "status", label: "status" },
+    ],
+  );
+}
+
+const { allocateTask, claimTask, cmdHash, listOwner, readMode, writeMeta } = await import("../../../cerberus/paths.ts");
 const { startBackground } = await import("../../../cerberus/runner.ts");
 
 const context = (owner: string, mode = "tui") => ({
@@ -184,6 +211,38 @@ try {
     twice.systemPromptOptions.promptGuidelines = [...first.systemPromptOptions.promptGuidelines];
     await handlers.before_agent_start(twice, context("hook-prompt"));
     assert.equal(twice.systemPromptOptions.promptGuidelines.length, 1);
+  }
+
+  // --- /cerberus on|off|status: the switch, read per tool call -------------
+  {
+    const messages: string[] = [];
+    const switchTo = (args: string) =>
+      commands.cerberus.handler(args, { ...context("hook-switch"), ui: { notify: (text: string) => messages.push(text) } });
+
+    await switchTo("status");
+    assert.deepEqual(messages, ["cerberus: mode gate"], "gate is the default");
+
+    await switchTo("on");
+    assert.equal(readMode(), "capture", "/cerberus on persists capture");
+    await switchTo("status");
+    assert.equal(messages.at(-1), "cerberus: mode capture");
+
+    const silent: any = { type: "tool_call", toolName: "bash", input: { command: "sleep 20" } };
+    assert.equal(await handlers.tool_call(silent, context("hook-switch")), undefined, "capture mode asks nothing");
+    assert.deepEqual(listOwner("hook-switch"), [], "capture mode stages nothing");
+
+    await switchTo("off");
+    assert.equal(readMode(), "gate");
+    const asked = await handlers.tool_call(
+      { type: "tool_call", toolName: "bash", input: { command: "sleep 20" } },
+      context("hook-switch"),
+    );
+    assert.equal(asked.block, true, "gate mode asks for a long command again");
+    assert.match(asked.reason, /^cerberus: this may block/);
+
+    await switchTo("bogus");
+    assert.equal(readMode(), "gate", "an unknown word changes nothing");
+    assert.match(messages.at(-1), /unknown argument/);
   }
 
   // --- session_shutdown: print/json never reap ----------------------------

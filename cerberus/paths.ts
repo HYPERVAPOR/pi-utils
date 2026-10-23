@@ -32,6 +32,17 @@ export const RETENTION_BYTES = 500 * 1024 * 1024;
 /** An unanswered staged command is dropped after an hour. */
 export const STAGED_TTL_MS = 60 * 60 * 1000;
 
+/**
+ * How the bash tool behaves.
+ *
+ * `gate` keeps the original gate: rules pick the few commands that look long and
+ * ask before anything runs. `capture` runs every command and only gives up on the
+ * result after the budget, leaving the rest of the task running.
+ */
+export type Mode = "gate" | "capture";
+
+export const DEFAULT_MODE: Mode = "gate";
+
 export interface TaskMeta {
   owner: string;
   cwd: string;
@@ -60,6 +71,25 @@ export function cerberusRoot(): string {
 
 export function tasksRoot(): string {
   return join(cerberusRoot(), "tasks");
+}
+
+export function configPath(): string {
+  return join(cerberusRoot(), "config.json");
+}
+
+/** Read per call, so `/cerberus on|off` takes effect without a restart. */
+export function readMode(): Mode {
+  try {
+    const parsed = JSON.parse(readFileSync(configPath(), "utf8"));
+    return parsed?.mode === "capture" || parsed?.mode === "gate" ? parsed.mode : DEFAULT_MODE;
+  } catch {
+    return DEFAULT_MODE;
+  }
+}
+
+export function writeMode(mode: Mode): void {
+  mkdirSync(cerberusRoot(), { recursive: true });
+  writeAtomic(configPath(), `${JSON.stringify({ mode }, null, 2)}\n`);
 }
 
 /** Session ids are used as directory names, so keep them to a safe alphabet. */

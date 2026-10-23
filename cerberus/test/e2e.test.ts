@@ -36,16 +36,23 @@ const { cmdHash, listOwner, listTasks, readMeta, readPid, readRc, taskDir } = aw
 
 type Handler = (event: any, ctx: any) => unknown;
 const handlers: Record<string, Handler> = {};
+const tools: any[] = [];
 const fakePi = {
   on: (name: string, handler: Handler) => {
     handlers[name] = handler;
     return () => {};
   },
+  registerTool: (tool: any) => tools.push(tool),
+  registerCommand: () => {},
 };
 const extension = await import("../../extensions/cerberus.ts");
 /** How the extension prints the CLI: bare when a matching shim is on PATH. */
 const shown = extension.SHOWN_BIN;
-(extension.default as (pi: unknown) => void)(fakePi);
+await (extension.default as (pi: unknown) => Promise<void>)(fakePi);
+// The gate cases below run in `gate` mode, the default; the shadowed bash tool is
+// covered by cerberus/test/capture.test.ts.
+assert.equal(tools.length, 1);
+assert.equal(tools[0].name, "bash");
 
 assert.equal(typeof handlers.tool_call, "function");
 
