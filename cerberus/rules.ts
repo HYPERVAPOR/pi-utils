@@ -511,6 +511,27 @@ export function invokesGate(command: string): boolean {
   return false;
 }
 
+/**
+ * True when the line is *nothing but* the gate's own CLI: every simple command in it
+ * is `cerberus ...` (`cerberus wait 42`, `cerberus ls`, `'.../bin/cerberus' log 42`).
+ * The capture path runs such a line locally, like the gate does - `wait` is how a task
+ * is collected, so staging it would make it wait on itself.
+ *
+ * One command that is not `cerberus` is enough to disqualify the whole line
+ * (`cerberus ls && npm run build`, `echo hi && cerberus ls`): that line does real
+ * work, and the exemption must not become a way around the capture path.
+ */
+export function onlyInvokesGate(command: string): boolean {
+  let seen = false;
+  for (const simple of splitCommands(command)) {
+    const { target } = unwrap(simple.argv);
+    if (target.length === 0) continue;
+    if (basename(target[0]) !== "cerberus") return false;
+    seen = true;
+  }
+  return seen;
+}
+
 /** True when the line detaches itself: `&` or `setsid --fork`/`-f`. */
 export function isBackgrounded(command: string): boolean {
   return splitCommands(command).some((simple) => simple.background || unwrap(simple.argv).forks);

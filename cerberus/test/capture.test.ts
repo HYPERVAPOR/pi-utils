@@ -276,6 +276,64 @@ try {
     assert.equal(capture.captureBudgetMs({ [capture.BUDGET_ENV]: "200" }), 200);
     assert.equal(capture.captureBudgetMs({ [capture.BUDGET_ENV]: "nope" }), capture.DEFAULT_BUDGET_MS);
   }
+
+  // --- E1: the gate's own CLI is not captured, so `wait` cannot nest ------
+  {
+    process.env[capture.BUDGET_ENV] = "300";
+    paths.writeMode("capture");
+    const owner = "capture-exempt";
+    const slow = textOf(await run(ours, owner, "sleep 1.2; echo twentyfive"));
+    assert.match(slow, /^cerberus: still running id=\S+/, "the slow command is an ordinary task");
+    const id = slow.match(/id=(\S+)/)?.[1] as string;
+    assert.equal(paths.listOwner(owner).length, 1);
+
+    // One call collects it: `wait` is control surface, so it runs locally and blocks
+    // on the task instead of becoming a task that would need waiting on itself.
+    const waited = await run(ours, owner, `${BIN} wait ${id} --owner ${owner} --for 30`);
+    assert.doesNotMatch(textOf(waited), /still running/, "no nested notice");
+    assert.equal(textOf(waited), "twentyfive\n", "the wait returns the task's output");
+    assert.equal(waited.structuredContent.exit_code, 0);
+    assert.equal(paths.listOwner(owner).length, 1, "waiting created no task of its own");
+    assert.equal(paths.readRc(paths.taskDir(owner, id)), 0, "the task itself finished");
+
+    // The rest of the CLI is control surface too: no task directories at all.
+    for (const command of [`${BIN} ls --owner ${owner}`, `${BIN} log ${id} --owner ${owner}`, `${BIN} rc ${id} --owner ${owner}`, `${BIN} mode`]) {
+      const before = paths.listOwner(owner).length;
+      const result = await run(ours, owner, command);
+      assert.equal(result.structuredContent.exit_code, 0, `${command}: ran and exited 0`);
+      assert.equal(paths.listOwner(owner).length, before, `${command}: created no task`);
+    }
+    assert.match(textOf(await run(ours, owner, `${BIN} log ${id} --owner ${owner}`)), /twentyfive/, "log still reads it");
+    delete process.env[capture.BUDGET_ENV];
+  }
+
+  // --- E2: one real command in the line puts it back on the capture path ---
+  {
+    // Too short for any node process: every one of these lines must be captured.
+    process.env[capture.BUDGET_ENV] = "20";
+    paths.writeMode("capture");
+    const owner = "capture-mixed";
+    const cases: Array<[string, string]> = [
+      ["cerberus ls && sleep 12", `${BIN} ls && sleep 1`],
+      ["echo hi && cerberus ls", `echo hi && ${BIN} ls`],
+      ["cerberus ls && npm run build", `${BIN} ls && sleep 1`],
+      ["cerberus log 42 | head -5", `${BIN} log 1 | head -5`],
+    ];
+    for (const [shape, command] of cases) {
+      const result = await run(ours, owner, command);
+      assert.match(textOf(result), /^cerberus: still running id=\S+/, `${shape}: captured, so over budget`);
+      const id = textOf(result).match(/id=(\S+)/)?.[1] as string;
+      assert.ok(paths.listOwner(owner).some((task) => task.id === id), `${shape}: a real task`);
+      spawnSync(BIN, ["stop", id, "--owner", owner], { encoding: "utf8" });
+    }
+    // The mixed line really ran both halves.
+    process.env[capture.BUDGET_ENV] = "20";
+    const mixed = textOf(await run(ours, owner, `echo hi && ${BIN} ls --owner ${owner}`));
+    const mixedId = mixed.match(/id=(\S+)/)?.[1] as string;
+    const finished = spawnSync(BIN, ["wait", mixedId, "--owner", owner, "--for", "10"], { encoding: "utf8" });
+    assert.match(finished.stdout, /^hi\n/, "the echo ran before the CLI did");
+    delete process.env[capture.BUDGET_ENV];
+  }
 } finally {
   for (const file of litter) {
     try {
