@@ -23,6 +23,12 @@
  *   timeout >= budget: the model gets `still running` first and keeps a task handle;
  *                      the supervisor still kills it at the deadline (rc 124).
  *
+ * Lines that are nothing but the gate's own CLI (`cerberus wait 42`, `cerberus ls`)
+ * also run locally, via pi's own operations: they are the control plane, not work, and
+ * capturing `wait` would make it wait on a task of itself. See `onlyInvokesGate` in
+ * `rules.ts` - one command that is not `cerberus` puts the whole line back on the
+ * capture path.
+ *
  * In `gate` mode nothing here happens: the call goes straight to pi's own
  * `createLocalBashOperations`, so the legacy gate keeps behaving exactly as before.
  */
@@ -40,6 +46,7 @@ import {
   type Task,
   type TaskMeta,
 } from "./paths.ts";
+import { onlyInvokesGate } from "./rules.ts";
 import { TIMEOUT_RC, logPath, startBackground, terminate } from "./runner.ts";
 
 export const DEFAULT_BUDGET_MS = 10_000;
@@ -111,12 +118,15 @@ async function discard(task: Task): Promise<void> {
 
 /**
  * One operations object for both modes. `local` is pi's own bash backend, used
- * untouched in `gate` mode; the mode is read per call so a flip needs no restart.
+ * untouched in `gate` mode and for lines that are only the gate's own CLI; the mode is
+ * read per call so a flip needs no restart.
  */
 export function createOperations(local: Operations, budgetMs: () => number = captureBudgetMs): Operations {
   return {
     exec: (command, cwd, options) =>
-      readMode() === "capture" ? capture(command, cwd, options, budgetMs()) : local.exec(command, cwd, options),
+      readMode() === "capture" && !onlyInvokesGate(command)
+        ? capture(command, cwd, options, budgetMs())
+        : local.exec(command, cwd, options),
   };
 }
 

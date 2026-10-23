@@ -5,7 +5,7 @@
  *   node cerberus/test/rules.test.ts
  */
 import assert from "node:assert/strict";
-import { invokesGate, isBackgrounded, needsLongRun, splitCommands } from "../rules.ts";
+import { invokesGate, isBackgrounded, needsLongRun, onlyInvokesGate, splitCommands } from "../rules.ts";
 
 const HITS: Array<[string, string]> = [
   ["sleep >= 15", "sleep 15"],
@@ -301,6 +301,34 @@ for (const [label, command] of MISSES) {
   // A gate call is never long, even when it carries a long command.
   assert.equal(needsLongRun("cerberus bg 'sleep 900'"), false);
   assert.equal(needsLongRun("cerberus fg 42"), false);
+}
+
+// --- "nothing but the gate's CLI" is stricter than "invokes the gate" -------
+{
+  // Capture runs these locally: they are the control plane, not work.
+  assert.equal(onlyInvokesGate("cerberus wait 42 --for 60"), true);
+  assert.equal(onlyInvokesGate("cerberus ls"), true);
+  assert.equal(onlyInvokesGate("cerberus log 42"), true);
+  assert.equal(onlyInvokesGate("/home/hv/pi-utils/bin/cerberus rc 42"), true);
+  assert.equal(onlyInvokesGate("'/home/hv/pi-utils/bin/cerberus' wait 42"), true);
+  assert.equal(onlyInvokesGate("timeout 30 cerberus wait 42"), true);
+  assert.equal(onlyInvokesGate("sudo cerberus stop 42"), true);
+  assert.equal(onlyInvokesGate("CERBERUS_MODE=x cerberus ls"), true);
+  assert.equal(onlyInvokesGate("cerberus ls; cerberus rc 42"), true);
+  // The quoted command is one argv token, so this is still only the CLI itself.
+  assert.equal(onlyInvokesGate("cerberus bg 'sleep 900'"), true);
+
+  // One real command anywhere puts the whole line back on the capture path.
+  assert.equal(onlyInvokesGate("cerberus ls && sleep 12"), false);
+  assert.equal(onlyInvokesGate("echo hi && cerberus ls"), false);
+  assert.equal(onlyInvokesGate("cerberus fg 42 && npm test"), false);
+  assert.equal(onlyInvokesGate("cd /tmp && cerberus ls"), false);
+  assert.equal(onlyInvokesGate("cerberus log 42 | head -5"), false);
+  assert.equal(onlyInvokesGate("cerberus bg 'sleep 900'; sleep 900"), false);
+  assert.equal(onlyInvokesGate("npm test"), false);
+  assert.equal(onlyInvokesGate(""), false);
+  // ... and `invokesGate` alone would have exempted all of them.
+  assert.equal(invokesGate("cerberus ls && sleep 12"), true);
 }
 
 // --- splitting ------------------------------------------------------------
