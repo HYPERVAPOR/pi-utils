@@ -1,8 +1,10 @@
 /**
  * cerberus - capture every bash command, or ask before the few that look long.
  *
- * Two modes, picked with `/cerberus on|off|status` (or `cerberus mode ...`) and stored
- * in `$XDG_STATE_HOME/cerberus/config.json`, read once per tool call:
+ * Three modes, per session: picked with `/cerberus on|off|disabled` (or `cerberus mode
+ * ...`, `--default` for the machine) and stored in `$XDG_STATE_HOME/cerberus/config.json`,
+ * read once per tool call. A TUI session shows its own in a widget beside the editor
+ * (`widget.ts`), which a double click cycles.
  *
  * `capture` (on) - cerberus replaces pi's `bash` tool with the same definition built on
  *   its own operations (`cerberus/capture.ts`). Every command runs under the task
@@ -15,6 +17,9 @@
  *
  *     BIN fg <id>  runs the saved command in the foreground (streamed, exit code)
  *     BIN bg <id>  runs it in the background, output in a log
+ *
+ * `disabled` - cerberus does nothing at all: no capture, no rules, no questions, no
+ * tasks. The bash tool is pi's own.
  *
  * A `timeout` on the bash call is not an exemption: it only bounds the foreground
  * run that pi does after a pass-through. The gate preserves it untouched.
@@ -44,9 +49,17 @@ import {
   type TaskMeta,
 } from "../cerberus/paths.ts";
 import { createOperations, runningNotice, SlowTask } from "../cerberus/capture.ts";
-import { loadPi } from "../cerberus/pi-package.ts";
+import { loadPi, loadTui } from "../cerberus/pi-package.ts";
 import { isBackgrounded, needsLongRun, SHELL_KEYWORDS } from "../cerberus/rules.ts";
 import { backgroundBanner, startBackground } from "../cerberus/runner.ts";
+import {
+  createIndicator,
+  cycleMode,
+  WIDGET_KEY,
+  type Component,
+  type MouseRegionCtor,
+  type Tui,
+} from "./cerberus/widget.ts";
 
 /** This package's own CLI, whatever directory the package happens to live in. */
 const LOCAL_BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "cerberus");
@@ -228,6 +241,38 @@ function startStaged(staged: Staged): { id: string; log: string; rc: string } | 
   return { id: staged.id, ...startBackground(task) };
 }
 
+/**
+ * The indicator's state: what this session's mode is, the widget that draws it, and
+ * the timer that re-reads it.
+ *
+ * `shownMode` is what the widget renders. It is refreshed on the timer and after
+ * `/cerberus`, never inside `render()`: the state root is not read once per frame.
+ */
+let shownMode: Mode = "gate";
+let shownOwner: string | undefined;
+let shownTui: Tui | undefined;
+let indicatorTimer: ReturnType<typeof setInterval> | undefined;
+
+/** Re-read this session's mode and repaint. Cheap, and safe to call when nothing is shown. */
+function refreshIndicator(): void {
+  if (!shownOwner) return;
+  shownMode = readMode(shownOwner);
+  shownTui?.requestRender();
+}
+
+/** Stop drawing and reading. Idempotent: shutdown, reload and a second start may all call it. */
+function stopIndicator(): void {
+  if (indicatorTimer !== undefined) {
+    clearInterval(indicatorTimer);
+    indicatorTimer = undefined;
+  }
+  shownTui = undefined;
+  shownOwner = undefined;
+}
+
+/** How often the indicator re-reads the mode: fast enough to follow another pane. */
+const INDICATOR_MS = 2000;
+
 const MODE_WORDS: Record<string, Mode> = {
   on: "capture",
   off: "gate",
@@ -306,30 +351,41 @@ function registerModeCommand(pi: ExtensionAPI): void {
       const owner = ctx.sessionManager.getSessionId() || undefined;
       const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
       const word = words[0] ?? "status";
-      if (word === "status") {
-        ctx.ui.notify(modeStatus(owner), "info");
-        return;
+      // Every answer repaints the indicator: the mode may have just changed, and
+      // `status` is exactly when a stale indicator would be misleading.
+      try {
+        runModeCommand(word, words, owner, ctx);
+      } finally {
+        refreshIndicator();
       }
-      if (word === "default") {
-        const mode = MODE_WORDS[words[1] ?? ""];
-        if (!mode) {
-          ctx.ui.notify(`cerberus: default: unknown argument "${words[1] ?? ""}" (use on, off or disabled)`, "warning");
-          return;
-        }
-        writeMode(mode);
-        ctx.ui.notify(`cerberus: default mode ${mode}`, "info");
-        return;
-      }
-      const mode = MODE_WORDS[word];
-      if (!mode) {
-        ctx.ui.notify(`cerberus: unknown argument "${word}" (use on, off, disabled, status or default)`, "warning");
-        return;
-      }
-      // No session id (a one-shot run) leaves only the default to set.
-      writeMode(mode, owner);
-      ctx.ui.notify(owner ? `cerberus: mode ${mode} (session ${owner})` : `cerberus: default mode ${mode}`, "info");
     },
   });
+}
+
+/** The switch itself, split out so the indicator refresh cannot be forgotten. */
+function runModeCommand(word: string, words: string[], owner: string | undefined, ctx: ExtensionContext): void {
+  if (word === "status") {
+    ctx.ui.notify(modeStatus(owner), "info");
+    return;
+  }
+  if (word === "default") {
+    const global = MODE_WORDS[words[1] ?? ""];
+    if (!global) {
+      ctx.ui.notify(`cerberus: default: unknown argument "${words[1] ?? ""}" (use on, off or disabled)`, "warning");
+      return;
+    }
+    writeMode(global);
+    ctx.ui.notify(`cerberus: default mode ${global}`, "info");
+    return;
+  }
+  const mode = MODE_WORDS[word];
+  if (!mode) {
+    ctx.ui.notify(`cerberus: unknown argument "${word}" (use on, off, disabled, status or default)`, "warning");
+    return;
+  }
+  // No session id (a one-shot run) leaves only the default to set.
+  writeMode(mode, owner);
+  ctx.ui.notify(owner ? `cerberus: mode ${mode} (session ${owner})` : `cerberus: default mode ${mode}`, "info");
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -341,6 +397,41 @@ export default async function (pi: ExtensionAPI) {
     // pi keeps its built-in bash; the gate below still works
   }
   registerModeCommand(pi);
+
+  // The mode indicator: a widget beside the editor, this session's mode, double-click
+  // to cycle. No UI (print/json/rpc-less runs) means no widget and no timer.
+  pi.on("session_start", async (event, ctx: ExtensionContext) => {
+    stopIndicator();
+    if (!ctx.hasUI) return;
+    const owner = ctx.sessionManager.getSessionId() || undefined;
+    if (!owner) return;
+    let MouseRegion: MouseRegionCtor | undefined;
+    try {
+      MouseRegion = (await loadTui()).MouseRegion;
+    } catch {
+      // No TUI package to be found: the indicator still shows the mode, it just
+      // cannot take clicks, and session start must not fail over a widget.
+    }
+    shownOwner = owner;
+    shownMode = readMode(owner);
+    ctx.ui.setWidget(WIDGET_KEY, (tui: Tui, theme): Component => {
+      shownTui = tui;
+      return createIndicator({
+        mode: () => shownMode,
+        cycle: () => {
+          const next = cycleMode(shownMode);
+          writeMode(next, owner);
+          refreshIndicator();
+          ctx.ui.notify(`cerberus: mode ${next} (session ${owner})`, "info");
+        },
+        notify: (message, level) => ctx.ui.notify(message, level),
+        MouseRegion,
+      })(tui, theme);
+    });
+    // The state file is the truth and anything can write it (another pane, the CLI),
+    // so poll it instead of trusting a cached value, but not on every render.
+    indicatorTimer ??= setInterval(refreshIndicator, INDICATOR_MS);
+  });
 
   pi.on("tool_call", async (event, ctx: ExtensionContext) => {
     if (event.toolName !== "bash") return;
@@ -420,6 +511,10 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event, ctx: ExtensionContext) => {
+    // The widget and its timer go on every path (reload included: the session that
+    // loads next registers its own).
+    stopIndicator();
+    if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
     // reload keeps the process: tasks belong to the session that is still loading.
     if (event.reason === "reload") return;
     // In print/json mode the process is about to end and nobody will come back for

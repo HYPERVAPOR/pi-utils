@@ -64,7 +64,7 @@ assert.equal(typeof handlers.session_shutdown, "function");
   );
 }
 
-const { allocateTask, claimTask, cmdHash, listOwner, readConfig, readMode, writeMeta } =
+const { allocateTask, claimTask, cmdHash, listOwner, readConfig, readMode, writeMeta, writeMode } =
   await import("../../../cerberus/paths.ts");
 const { startBackground } = await import("../../../cerberus/runner.ts");
 
@@ -276,6 +276,108 @@ try {
     await switchTo("bogus");
     assert.equal(readMode("hook-switch"), "disabled", "an unknown word changes nothing");
     assert.match(messages.at(-1), /unknown argument/);
+  }
+
+  // --- the mode indicator: a widget beside the editor, per session --------
+  {
+    // Count timers through the globals, so "nothing left running" is an assertion and
+    // not a hope. The widget's own interval is the only one this extension starts.
+    const live = new Set<unknown>();
+    const realSet = globalThis.setInterval;
+    const realClear = globalThis.clearInterval;
+    const tickers: Array<() => void> = [];
+    (globalThis as any).setInterval = ((fn: () => void, ms: number, ...rest: unknown[]) => {
+      const timer = (realSet as any)(fn, ms, ...rest);
+      live.add(timer);
+      tickers.push(fn);
+      return timer;
+    }) as any;
+    (globalThis as any).clearInterval = ((timer: unknown) => {
+      live.delete(timer);
+      return (realClear as any)(timer);
+    }) as any;
+
+    const widgets: Array<{ key: string; factory: any }> = [];
+    const notes: string[] = [];
+    const indicatorCtx = (owner: string, hasUI = true) => ({
+      ...context(owner),
+      hasUI,
+      ui: {
+        setWidget: (key: string, factory: any) => widgets.push({ key, factory }),
+        notify: (text: string) => notes.push(text),
+      },
+    });
+
+    try {
+      // No UI: no widget, no timer.
+      await handlers.session_start({ type: "session_start" }, indicatorCtx("ind-no-ui", false));
+      assert.deepEqual(widgets, [], "print/json registers no widget");
+      assert.equal(live.size, 0, "and starts no timer");
+
+      const owner = "ind-a";
+      writeMode("gate");
+      writeMode("capture", owner);
+      const ctx = indicatorCtx(owner);
+      await handlers.session_start({ type: "session_start" }, ctx);
+      assert.equal(widgets.length, 1);
+      assert.equal(widgets[0].key, "cerberus", "the widget key shutdown removes");
+      assert.equal(typeof widgets[0].factory, "function");
+      assert.equal(live.size, 1, "one timer, ~2s");
+      assert.equal(tickers.length, 1);
+
+      // The widget renders this session's mode, with pi's own MouseRegion around it.
+      const tui = { renders: 0, requestRender() { this.renders++; } };
+      const theme = { fg: (color: string, text: string) => `${color}|${text}` };
+      const component = widgets[0].factory(tui, theme);
+      assert.deepEqual(component.render(80), ["success|cerberus:capture"]);
+
+      // Another session's switch does not leak in; this one's follows on the next tick.
+      writeMode("disabled", "ind-b");
+      tickers[0]();
+      assert.deepEqual(component.render(80), ["success|cerberus:capture"], "session b's mode stays on session b");
+      writeMode("gate", owner);
+      tickers[0]();
+      assert.deepEqual(component.render(80), ["warning|cerberus:gate"], "the timer picks up this session's mode");
+
+      // /cerberus repaints without waiting for a tick.
+      await commands.cerberus.handler("on", { ...ctx, ui: { notify: (text: string) => notes.push(text) } });
+      assert.deepEqual(component.render(80), ["success|cerberus:capture"], "the command refreshes the indicator");
+      assert.equal(readMode(owner), "capture");
+
+      // A double click cycles capture -> gate -> disabled -> capture, and notifies.
+      notes.length = 0;
+      const dbl = { type: "click", button: "left", clickCount: 2 };
+      component.handleMouse(dbl);
+      assert.equal(readMode(owner), "gate", "a double click writes this session's mode");
+      assert.deepEqual(component.render(80), ["warning|cerberus:gate"]);
+      assert.deepEqual(notes, [`cerberus: mode gate (session ${owner})`]);
+      component.handleMouse({ ...dbl });   // gate -> disabled
+      component.handleMouse({ ...dbl });   // disabled -> capture
+      assert.equal(readMode(owner), "capture", "the cycle wraps");
+      // A single click does nothing.
+      component.handleMouse({ type: "click", button: "left", clickCount: 1 });
+      assert.equal(readMode(owner), "capture", "a single click is not a mode change");
+
+      // Shutdown clears the widget and leaves no interval behind - twice, for the
+      // session switch and /reload paths that converge here.
+      await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
+      assert.deepEqual(widgets.at(-1), { key: "cerberus", factory: undefined }, "the widget is removed");
+      assert.equal(live.size, 0, "no setInterval survives shutdown");
+      await handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, ctx);
+      assert.equal(live.size, 0, "and shutting down twice is harmless");
+
+      // Starting again after a shutdown works (session switch), still one timer.
+      widgets.length = 0;
+      await handlers.session_start({ type: "session_start" }, indicatorCtx(owner));
+      assert.equal(widgets.length, 1);
+      assert.equal(live.size, 1);
+      await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, indicatorCtx(owner));
+      assert.equal(live.size, 0);
+      writeMode("gate");
+    } finally {
+      (globalThis as any).setInterval = realSet;
+      (globalThis as any).clearInterval = realClear;
+    }
   }
 
   // --- session_shutdown: print/json never reap ----------------------------

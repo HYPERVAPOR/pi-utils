@@ -13,6 +13,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const PACKAGE = "@earendil-works/pi-coding-agent";
+/** Same install, same fallback: the TUI package ships beside the agent package. */
+const TUI_PACKAGE = "@earendil-works/pi-tui";
 
 /** The parts of pi this package builds on. */
 export interface PiApi {
@@ -41,8 +43,8 @@ function entryOf(dir: string): string | undefined {
   return existsSync(index) ? index : undefined;
 }
 
-function candidates(): string[] {
-  const urls: string[] = [PACKAGE];
+function candidates(pkg: string): string[] {
+  const urls: string[] = [pkg];
 
   const override = process.env.CERBERUS_PI_PACKAGE;
   if (override) {
@@ -54,7 +56,7 @@ function candidates(): string[] {
   try {
     const versions = readdirSync(releases).sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
     for (const version of versions.reverse()) {
-      const index = entryOf(join(releases, version, "node_modules", PACKAGE));
+      const index = entryOf(join(releases, version, "node_modules", pkg));
       if (index) urls.push(pathToFileURL(index).href);
     }
   } catch {
@@ -69,7 +71,7 @@ let loaded: Promise<PiApi> | undefined;
 export function loadPi(): Promise<PiApi> {
   loaded ??= (async () => {
     const tried: string[] = [];
-    for (const specifier of candidates()) {
+    for (const specifier of candidates(PACKAGE)) {
       tried.push(specifier);
       try {
         const module = await import(specifier);
@@ -81,4 +83,29 @@ export function loadPi(): Promise<PiApi> {
     throw new Error(`cannot load ${PACKAGE}; tried:\n  ${tried.join("\n  ")}`);
   })();
   return loaded;
+}
+
+/** The one component the mode indicator needs from pi's TUI package. */
+export interface TuiApi {
+  MouseRegion: new (child: { render(width: number): string[]; invalidate(): void }, onMouse: (event: any) => unknown) => any;
+}
+
+let loadedTui: Promise<TuiApi> | undefined;
+
+/** pi's TUI package, or a failure that names every place that was tried. */
+export function loadTui(): Promise<TuiApi> {
+  loadedTui ??= (async () => {
+    const tried: string[] = [];
+    for (const specifier of candidates(TUI_PACKAGE)) {
+      tried.push(specifier);
+      try {
+        const module = await import(specifier);
+        if (typeof module.MouseRegion === "function") return module as TuiApi;
+      } catch {
+        // try the next candidate
+      }
+    }
+    throw new Error(`cannot load ${TUI_PACKAGE}; tried:\n  ${tried.join("\n  ")}`);
+  })();
+  return loadedTui;
 }
