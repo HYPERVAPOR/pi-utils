@@ -8,7 +8,7 @@ Small extensions for everyday pi sessions.
 | [`tools`](extensions/tools.ts) | `/tools` | 0 | Show which tools are declared to the model (`✓`) and which are registered but inactive (`·`) |
 | [`copy-code`](copy-code/README.md) | `/copy-code`, `alt+c` | 0 | Copy the raw source of an earlier code block, without TUI re-wrapping |
 | [`deepseek-search`](extensions/deepseek-search.ts) | `web_search` | tool schema | Web search through the DeepSeek Search API |
-| [`cerberus`](extensions/cerberus.ts) | `bash`, `cerberus` | prompt section | Gate suspected long commands with a one-question choice: run in the foreground or the background |
+| [`cerberus`](extensions/cerberus.ts) | `bash`, `cerberus` | prompt section | Two ways to keep a long `bash` call from blocking the turn: ask first (gate), or run it and hand back a task handle after 10s (capture) |
 
 ## Install
 
@@ -78,7 +78,24 @@ The shim is created on install, not on `pi update`: updating only fetches the cl
 it runs no scripts. `-e` users (a checkout or a profile) never install, so they need
 `cerberus shim` once.
 
-A gate in front of `bash`: ordinary commands pass through byte-for-byte, and a
+Two modes, switched at runtime with `/cerberus on|off|status` or `cerberus mode
+on|off|status` and stored in `$XDG_STATE_HOME/cerberus/config.json` (read once per tool
+call, so a flip needs no restart). The default is `gate`.
+
+**`capture` (`/cerberus on`)** replaces the built-in `bash` tool with the same
+definition - pi's own `createBashToolDefinition`, so schema, description, truncation
+and result formatting are the built-in's - and runs every command through the task
+machinery. A command that finishes within the budget comes back exactly as the
+built-in would have returned it, byte for byte. A command that outlives the budget
+keeps running as a normal task and the tool result is one line:
+`cerberus: still running id=<id> (cerberus wait <id>)`. The budget is 10s, or
+`CERBERUS_CAPTURE_BUDGET_MS`. A `timeout` on the bash call is passed to the task, so
+the command dies with rc 124 and the usual "Command timed out after N seconds";
+cancelling the call stops the task. In this mode the gate below is a no-op: no
+rules, no questions.
+
+**`gate` (`/cerberus off`, the default)**: a gate in front of `bash`. Ordinary
+commands pass through byte-for-byte, and a
 small conservative rule table (package builds/tests, `sleep` >= 15s, `tail -f`,
 `docker build`, `git push`, ...) catches only commands that look likely to block.
 It looks through wrappers and runners (`timeout`, `sudo`, `env`, `bash -c`,
@@ -142,6 +159,7 @@ node cerberus/test/paths.test.ts
 node cerberus/test/rules.test.ts
 node cerberus/test/cli.test.ts
 node cerberus/test/e2e.test.ts
+node cerberus/test/capture.test.ts
 node extensions/cerberus/test/hook.test.ts
 ```
 
