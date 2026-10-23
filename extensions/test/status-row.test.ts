@@ -113,7 +113,66 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
   leaveStatusRow(ui, "cerberus");
   leaveStatusRow(ui, "nobody");
   assert.equal(ui.calls.length, 2, "nothing more is written");
-  assert.equal((globalThis as any)[GLOBAL_KEY].parts.size, 0);
+  assert.equal((globalThis as any)[GLOBAL_KEY], undefined, "and the registry is gone (reload starts clean)");
+}
+
+// --- a registry left over by an older build is upgraded, not trusted -----
+// `/reload` rebuilds the extension but `globalThis.__piStatusRow` - and the render the
+// widget holds - are the old build's. Before this, the new gap code never ran.
+{
+  reset();
+  const ui = fakeUi();
+  const hits: string[] = [];
+  const staleRender = () => ({ render: () => ["hb_block:truecerberus:on"], invalidate() {} });
+  const parts = new Map<string, any>([["cerberus", stubPart("cerberus:on", hits)]]);
+  (globalThis as any)[GLOBAL_KEY] = { version: 1, parts, widgetSet: true, render: staleRender };
+
+  joinStatusRow(ui, "hb_block", stubPart("hb_block:true", hits), api);
+  const row = (globalThis as any)[GLOBAL_KEY];
+  assert.equal(ui.calls.length, 1, "the widget is re-set so it drops the old render");
+  assert.equal(ui.calls[0].key, ROW_KEY);
+  assert.equal(ui.calls[0].content, row.render, "with the new render");
+  assert.notEqual(row.render, staleRender, "the registry field itself was replaced");
+  assert.equal(row.renderVersion, 2, "and says which composition it now has");
+  assert.equal(row.version, 1, "the shape version is untouched");
+  assert.deepEqual([...row.parts.keys()], ["cerberus", "hb_block"], "the foreign part is kept");
+
+  const upgraded = ui.calls[0].content(tui(), theme);
+  assert.deepEqual(upgraded.render(200).map(plain), ["cerberus:on  hb_block:true"], "the gap is in effect");
+
+  // A second join sees a current registry and does not touch the widget again.
+  joinStatusRow(ui, "third", stubPart("third", hits), api);
+  assert.equal(ui.calls.length, 1, "no further setWidget once the composition is current");
+  assert.deepEqual(upgraded.render(200).map(plain), ["cerberus:on  hb_block:true  third"]);
+
+  leaveStatusRow(ui, "cerberus");
+  leaveStatusRow(ui, "hb_block");
+  leaveStatusRow(ui, "third");
+  assert.equal((globalThis as any)[GLOBAL_KEY], undefined, "leaving empties it out completely");
+}
+
+// --- the reload path: nothing left behind means the new code builds it ---
+{
+  reset();
+  const ui = fakeUi();
+  const hits: string[] = [];
+  joinStatusRow(ui, "a", stubPart("aaa", hits), api);
+  joinStatusRow(ui, "b", stubPart("bbb", hits), api);
+  const before = ui.calls[0].content(tui(), theme);
+  assert.deepEqual(before.render(200).map(plain), ["aaa  bbb"]);
+  leaveStatusRow(ui, "a");
+  leaveStatusRow(ui, "b");
+  assert.equal((globalThis as any)[GLOBAL_KEY], undefined, "the registry does not outlive its last part");
+
+  // A reload: the next join builds a fresh registry with the current composition.
+  ui.calls.length = 0;
+  joinStatusRow(ui, "a", stubPart("aaa", hits), api);
+  joinStatusRow(ui, "b", stubPart("bbb", hits), api);
+  const after = ui.calls[0].content(tui(), theme);
+  assert.deepEqual(after.render(200).map(plain), ["aaa  bbb"], "the gap survives the restart");
+  assert.equal((globalThis as any)[GLOBAL_KEY].renderVersion, 2);
+  leaveStatusRow(ui, "a");
+  leaveStatusRow(ui, "b");
 }
 
 // --- the gap is exactly two columns, only between parts ------------------
@@ -141,20 +200,23 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
   const theirCalls: string[] = [];
   const ui = fakeUi();
   const theirs = { render: () => ({ render: () => ["theirs"], invalidate() {} }) };
+  const theirRender = (t: any, th: any) => {
+    theirCalls.push("render");
+    return theirs.render();
+  };
   (globalThis as any)[GLOBAL_KEY] = {
     version: 1,
+    // A peer that is already on this composition: nothing to upgrade, nothing to set.
+    renderVersion: 2,
     parts: new Map([["hb_block", () => ({ render: () => ["hb_block:false"], invalidate() {} })]]),
     widgetSet: true,
-    render: (t: any, th: any) => {
-      theirCalls.push("render");
-      return theirs.render();
-    },
+    render: theirRender,
   };
   joinStatusRow(ui, "cerberus", stubPart("cerberus:on"), api);
   assert.deepEqual(ui.calls, [], "no second setWidget: they already own the widget");
   const row = (globalThis as any)[GLOBAL_KEY];
   assert.deepEqual([...row.parts.keys()], ["hb_block", "cerberus"], "the existing part was kept");
-  assert.equal(row.render, (globalThis as any)[GLOBAL_KEY].render);
+  assert.equal(row.render, theirRender, "their render is left alone when it is current");
   leaveStatusRow(ui, "cerberus");
   leaveStatusRow(ui, "hb_block");
   assert.deepEqual(ui.calls.at(-1), { key: ROW_KEY, content: undefined }, "the last leave still clears the row");
