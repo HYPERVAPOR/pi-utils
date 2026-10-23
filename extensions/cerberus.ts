@@ -34,6 +34,7 @@ import {
   cmdHash,
   findStaged,
   readDecision,
+  modeSource,
   readMode,
   writeDecision,
   writeMeta,
@@ -227,7 +228,19 @@ function startStaged(staged: Staged): { id: string; log: string; rc: string } | 
   return { id: staged.id, ...startBackground(task) };
 }
 
-const MODE_WORDS: Record<string, Mode> = { on: "capture", off: "gate", capture: "capture", gate: "gate" };
+const MODE_WORDS: Record<string, Mode> = {
+  on: "capture",
+  off: "gate",
+  disabled: "disabled",
+  capture: "capture",
+  gate: "gate",
+};
+
+/** Where the effective mode came from, in the words a user can act on. */
+function modeStatus(owner: string | undefined): string {
+  const source = modeSource(owner);
+  return `cerberus: mode ${readMode(owner)} (${source}${source === "session" && owner ? ` ${owner}` : ""})`;
+}
 
 function question(id: string): string {
   return [
@@ -275,24 +288,46 @@ async function registerBash(pi: ExtensionAPI): Promise<void> {
   });
 }
 
+/**
+ * `/cerberus on|off|disabled|status|default <mode>`.
+ *
+ * The switch is per session: `on`/`off`/`disabled` change the session the command was
+ * typed in, `default <mode>` changes what every other session gets.
+ */
 function registerModeCommand(pi: ExtensionAPI): void {
   pi.registerCommand("cerberus", {
-    description: "cerberus mode: on (capture every bash call) | off (ask before long ones) | status",
+    description:
+      "cerberus mode: on (capture every bash call) | off (ask before long ones) | disabled (nothing) | status | default <mode>",
     getArgumentCompletions: (prefix: string) =>
-      ["on", "off", "status"].filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
+      ["on", "off", "disabled", "status", "default"]
+        .filter((word) => word.startsWith(prefix))
+        .map((word) => ({ value: word, label: word })),
     handler: async (args, ctx) => {
-      const word = args.trim().toLowerCase();
-      if (word === "" || word === "status") {
-        ctx.ui.notify(`cerberus: mode ${readMode()}`, "info");
+      const owner = ctx.sessionManager.getSessionId() || undefined;
+      const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const word = words[0] ?? "status";
+      if (word === "status") {
+        ctx.ui.notify(modeStatus(owner), "info");
+        return;
+      }
+      if (word === "default") {
+        const mode = MODE_WORDS[words[1] ?? ""];
+        if (!mode) {
+          ctx.ui.notify(`cerberus: default: unknown argument "${words[1] ?? ""}" (use on, off or disabled)`, "warning");
+          return;
+        }
+        writeMode(mode);
+        ctx.ui.notify(`cerberus: default mode ${mode}`, "info");
         return;
       }
       const mode = MODE_WORDS[word];
       if (!mode) {
-        ctx.ui.notify(`cerberus: unknown argument "${word}" (use on, off or status)`, "warning");
+        ctx.ui.notify(`cerberus: unknown argument "${word}" (use on, off, disabled, status or default)`, "warning");
         return;
       }
-      writeMode(mode);
-      ctx.ui.notify(`cerberus: mode ${mode}`, "info");
+      // No session id (a one-shot run) leaves only the default to set.
+      writeMode(mode, owner);
+      ctx.ui.notify(owner ? `cerberus: mode ${mode} (session ${owner})` : `cerberus: default mode ${mode}`, "info");
     },
   });
 }
@@ -309,8 +344,9 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("tool_call", async (event, ctx: ExtensionContext) => {
     if (event.toolName !== "bash") return;
-    // `capture` owns every bash call inside the tool itself: no rules, no questions.
-    if (readMode() === "capture") return;
+    // Only `gate` asks anything: `capture` owns every bash call inside the tool itself,
+    // and `disabled` is cerberus out of the way entirely - no rules, no questions.
+    if (readMode(ctx.sessionManager.getSessionId() || undefined) !== "gate") return;
     const original = event.input.command;
     if (typeof original !== "string" || original.length === 0) return;
 

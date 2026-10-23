@@ -334,6 +334,40 @@ try {
     assert.match(finished.stdout, /^hi\n/, "the echo ran before the CLI did");
     delete process.env[capture.BUDGET_ENV];
   }
+  // --- F: the mode is per session, and `disabled` is plain pi ------------
+  {
+    process.env[capture.BUDGET_ENV] = "200";
+    const [capturing, gated, off] = ["mode-capture", "mode-gate", "mode-disabled"];
+    paths.writeMode("gate");
+    paths.writeMode("capture", capturing);
+    paths.writeMode("disabled", off);
+    assert.deepEqual(paths.readConfig(), { default: "gate", sessions: { [capturing]: "capture", [off]: "disabled" } });
+    assert.equal(paths.readMode(gated), "gate");
+
+    // A captures: a fast command leaves nothing, a slow one hands back an id.
+    assert.equal((await run(ours, capturing, "echo fast")).structuredContent.exit_code, 0);
+    assert.deepEqual(paths.listOwner(capturing), [], "a fast command leaves no task");
+    const slow = textOf(await run(ours, capturing, "sleep 1; echo late"));
+    assert.match(slow, /^cerberus: still running id=\S+/, "the capturing owner gets a task");
+    const slowId = slow.match(/id=(\S+)/)?.[1] as string;
+    assert.equal(paths.listOwner(capturing).length, 1);
+
+    // B shares the config but not the mode: its slow command runs inline.
+    const inline = await run(ours, gated, "sleep 0.6; echo late-b");
+    assert.equal(textOf(inline), "late-b\n", "the gated owner waits for it");
+    assert.deepEqual(paths.listOwner(gated), [], "the gated owner stages nothing");
+    assert.equal(paths.listOwner(capturing).length, 1, "and does not disturb the other one");
+
+    // C is disabled: the built-in's own result, and nothing on disk.
+    compare("disabled is the built-in", await run(ours, off, "echo disabled"), await run(reference, off, "echo disabled"));
+    assert.equal(textOf(await run(ours, off, "sleep 0.4; echo off")), "off\n");
+    assert.deepEqual(paths.listOwner(off), [], "disabled leaves nothing behind");
+
+    spawnSync(BIN, ["stop", slowId, "--owner", capturing], { encoding: "utf8" });
+    for (const owner of [capturing, gated, off]) rmSync(paths.ownerDir(owner), { recursive: true, force: true });
+    paths.writeMode("gate");
+    delete process.env[capture.BUDGET_ENV];
+  }
 } finally {
   for (const file of litter) {
     try {

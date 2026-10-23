@@ -16,6 +16,7 @@ import {
   isAlive,
   listOwner,
   listTasks,
+  modeSource,
   pidOf,
   readMode,
   readRc,
@@ -75,7 +76,9 @@ export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap|mode|shim>
   rc [<id>]
   stop <id> [--force]
   reap [--owner <sid> | --all-stale] [--decisions] [--quiet] [--json]
-  mode on|off|status        switch the bash tool (on = capture, off = gate, default off)
+  mode [on|off|disabled|status] [--owner <sid> | --default]
+                            bash behaviour: on = capture, off = gate, disabled = nothing;
+                            this session unless --default (on = capture, off = gate)
   shim [--dir <dir>] [--remove] [--quiet]   link this CLI into a directory on PATH
 
 With no <id>, log/rc/wait use the most recent task of the current owner.
@@ -627,22 +630,41 @@ function isLinkTo(path: string, target: string): boolean {
   }
 }
 
-const MODE_WORDS: Record<string, Mode> = { on: "capture", off: "gate", capture: "capture", gate: "gate" };
+const MODE_WORDS: Record<string, Mode> = {
+  on: "capture",
+  off: "gate",
+  disabled: "disabled",
+  capture: "capture",
+  gate: "gate",
+};
 
-/** `cerberus mode on|off|status`: the same switch `/cerberus` sets, for scripts. */
+/**
+ * `cerberus mode [on|off|disabled|status] [--owner <sid> | --default]`: the same
+ * switch `/cerberus` sets, for scripts. Without `--default` it addresses one session -
+ * `--owner`, or the session this command runs in (`PI_SESSION_ID`) - and it refuses to
+ * guess, since a session switch that quietly changed the whole machine is exactly the
+ * behaviour per-session mode exists to stop.
+ */
 export function modeCommand(args: Args, io: Io = stdIo): number {
+  const owner = args.bools.has("default") ? undefined : ownerFrom(args);
   const word = (args.pos[0] ?? "").toLowerCase();
+  const target = owner ? ` (session ${owner})` : " (default)";
   if (word === "" || word === "status") {
-    io.out(note(`mode ${readMode()}`));
+    const source = modeSource(owner);
+    io.out(note(`mode ${readMode(owner)} (${source}${source === "session" && owner ? ` ${owner}` : ""})`));
     return 0;
   }
   const mode = MODE_WORDS[word];
   if (!mode) {
-    io.err(fail(`mode: expected on, off or status (got ${word})`));
+    io.err(fail(`mode: expected on, off, disabled or status (got ${word})`));
     return 2;
   }
-  writeMode(mode);
-  io.out(note(`mode ${mode}`));
+  if (!owner && !args.bools.has("default")) {
+    io.err(fail("mode: no session (pass --owner, set PI_SESSION_ID, or use --default)"));
+    return 2;
+  }
+  writeMode(mode, owner);
+  io.out(note(`mode ${mode}${target}`));
   return 0;
 }
 

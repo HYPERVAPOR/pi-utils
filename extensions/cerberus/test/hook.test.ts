@@ -57,12 +57,15 @@ assert.equal(typeof handlers.session_shutdown, "function");
     [
       { value: "on", label: "on" },
       { value: "off", label: "off" },
+      { value: "disabled", label: "disabled" },
       { value: "status", label: "status" },
+      { value: "default", label: "default" },
     ],
   );
 }
 
-const { allocateTask, claimTask, cmdHash, listOwner, readMode, writeMeta } = await import("../../../cerberus/paths.ts");
+const { allocateTask, claimTask, cmdHash, listOwner, readConfig, readMode, writeMeta } =
+  await import("../../../cerberus/paths.ts");
 const { startBackground } = await import("../../../cerberus/runner.ts");
 
 const context = (owner: string, mode = "tui") => ({
@@ -213,26 +216,36 @@ try {
     assert.equal(twice.systemPromptOptions.promptGuidelines.length, 1);
   }
 
-  // --- /cerberus on|off|status: the switch, read per tool call -------------
+  // --- /cerberus on|off|disabled|status|default: per session, per tool call -
   {
     const messages: string[] = [];
-    const switchTo = (args: string) =>
-      commands.cerberus.handler(args, { ...context("hook-switch"), ui: { notify: (text: string) => messages.push(text) } });
+    const switchTo = (args: string, owner = "hook-switch") =>
+      commands.cerberus.handler(args, { ...context(owner), ui: { notify: (text: string) => messages.push(text) } });
 
     await switchTo("status");
-    assert.deepEqual(messages, ["cerberus: mode gate"], "gate is the default");
+    assert.deepEqual(messages, ["cerberus: mode gate (default)"], "gate is the default");
 
     await switchTo("on");
-    assert.equal(readMode(), "capture", "/cerberus on persists capture");
+    assert.equal(readMode("hook-switch"), "capture", "/cerberus on persists capture for this session");
+    assert.equal(messages.at(-1), "cerberus: mode capture (session hook-switch)");
     await switchTo("status");
-    assert.equal(messages.at(-1), "cerberus: mode capture");
+    assert.equal(messages.at(-1), "cerberus: mode capture (session hook-switch)");
 
     const silent: any = { type: "tool_call", toolName: "bash", input: { command: "sleep 20" } };
     assert.equal(await handlers.tool_call(silent, context("hook-switch")), undefined, "capture mode asks nothing");
     assert.deepEqual(listOwner("hook-switch"), [], "capture mode stages nothing");
 
+    // Another session is untouched: it still gets the gate.
+    await switchTo("status", "hook-other");
+    assert.equal(messages.at(-1), "cerberus: mode gate (default)", "the switch is per session");
+    const askedOther = await handlers.tool_call(
+      { type: "tool_call", toolName: "bash", input: { command: "sleep 20" } },
+      context("hook-other"),
+    );
+    assert.equal(askedOther.block, true, "the other session still asks");
+
     await switchTo("off");
-    assert.equal(readMode(), "gate");
+    assert.equal(readMode("hook-switch"), "gate");
     const asked = await handlers.tool_call(
       { type: "tool_call", toolName: "bash", input: { command: "sleep 20" } },
       context("hook-switch"),
@@ -240,8 +253,28 @@ try {
     assert.equal(asked.block, true, "gate mode asks for a long command again");
     assert.match(asked.reason, /^cerberus: this may block/);
 
+    // `disabled` is cerberus out of the way: no question, no task, not even the CLI
+    // expansion - the tool itself runs pi's own bash.
+    await switchTo("disabled");
+    assert.equal(readMode("hook-switch"), "disabled");
+    for (const command of ["sleep 20", "npm install", "cerberus ls"]) {
+      const event: any = { type: "tool_call", toolName: "bash", input: { command } };
+      assert.equal(await handlers.tool_call(event, context("hook-switch")), undefined, `${command}: nothing asked`);
+      assert.equal(event.input.command, command, `${command}: left exactly as it was`);
+    }
+
+    // `default <mode>` moves every session that has no entry of its own.
+    await switchTo("default on");
+    assert.equal(readConfig().default, "capture");
+    assert.equal(readMode("hook-other"), "capture", "the default follows");
+    assert.equal(readMode("hook-switch"), "disabled", "an explicit entry still wins");
+    await switchTo("default off");
+    assert.equal(readMode("hook-other"), "gate");
+    await switchTo("default bogus");
+    assert.match(messages.at(-1), /default: unknown argument/);
+
     await switchTo("bogus");
-    assert.equal(readMode(), "gate", "an unknown word changes nothing");
+    assert.equal(readMode("hook-switch"), "disabled", "an unknown word changes nothing");
     assert.match(messages.at(-1), /unknown argument/);
   }
 
