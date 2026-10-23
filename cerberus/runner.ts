@@ -32,6 +32,7 @@ import {
   readMeta,
   readPid,
   readRc,
+  tildify,
   writeMeta,
   writePid,
   writeRc,
@@ -116,6 +117,14 @@ export interface BackgroundStart {
   pid: number;
   log: string;
   rc: string;
+}
+
+/**
+ * The one line a started background task prints, from the CLI and from the gate's
+ * auto-bg path alike. `rc` is always `dirname(log)/rc`, so it is not repeated.
+ */
+export function backgroundBanner(id: string, log: string): string {
+  return `cerberus: background id=${id} log=${tildify(log)}`;
 }
 
 function positiveSeconds(value: number | undefined): number | undefined {

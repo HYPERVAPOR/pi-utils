@@ -309,7 +309,7 @@ try {
     assert.equal(
       reason,
       [
-        "Cerberus: this may block for a long time. Nothing has run yet. Answer by running exactly one:",
+        "cerberus: this may block for a long time. Nothing has run yet. Answer by running exactly one:",
         `  ${shown} fg <id>   -> I must wait: run it in the foreground and return the output`,
         `  ${shown} bg <id>   -> I do not need it now: run it in the background, I will check later`,
         `  (background has no deadline; stop it with ${shown} stop <id>)`,
@@ -319,7 +319,7 @@ try {
         .replaceAll("<id>", idOf(reason)),
       "the question is emitted verbatim",
     );
-    assert.match(reason, /Cerberus: this may block for a long time\. Nothing has run yet\./);
+    assert.match(reason, /^cerberus: this may block for a long time\. Nothing has run yet\./);
     assert.match(reason, /Do not answer in prose\./);
     assert.ok(reason.includes("(background has no deadline;"), reason);
     assert.equal(event.input.command, command, "a blocked call keeps its command");
@@ -415,7 +415,7 @@ try {
     const firstDir = taskDir(bgOwner, firstId);
     assert.equal(
       bg.stdout,
-      `[cerberus] background id=${firstId} log=${join(firstDir, "out.log")} rc=${join(firstDir, "rc")}\n`,
+      `cerberus: background id=${firstId} log=${join(firstDir, "out.log")}\n`,
     );
     assert.equal(await waitForRc(firstDir), 0);
     assert.equal(runs(), before + 1);
@@ -427,15 +427,12 @@ try {
     assert.equal(again.result?.terminate, undefined);
     assert.equal(again.event.input.command, command, "no rewrite to `bg <id>`");
     const reason = again.result?.reason ?? "";
-    const started = /^\[cerberus\] background id=(\S+) log=(\S+) rc=(\S+)$/m.exec(reason);
+    const started = /^cerberus: background id=(\S+) log=(\S+)$/m.exec(reason);
     assert.ok(started, reason);
     const secondId = started[1];
     assert.notEqual(secondId, firstId);
     assert.equal(started[2], join(taskDir(bgOwner, secondId), "out.log"));
-    assert.equal(started[3], join(taskDir(bgOwner, secondId), "rc"));
-    assert.ok(reason.includes(`${shown} log ${secondId}`), reason);
-    assert.ok(reason.includes(`${shown} rc ${secondId}`), reason);
-    assert.ok(reason.includes(`${shown} wait ${secondId}`), reason);
+    assert.equal(reason.trim(), `cerberus: background id=${secondId} log=${join(taskDir(bgOwner, secondId), "out.log")}`);
     assert.equal(await waitForRc(taskDir(bgOwner, secondId)), 0);
     assert.equal(runs(), before + 2, "the gate-spawned task ran exactly once");
     assert.equal(readMeta(taskDir(bgOwner, secondId))?.state, "finished");
@@ -530,7 +527,7 @@ try {
     assert.equal(bg.status, 0, bg.stderr);
     assert.equal(
       bg.stdout,
-      `[cerberus] background id=${liveTaskId} log=${join(dir, "out.log")} rc=${join(dir, "rc")}\n`,
+      `cerberus: background id=${liveTaskId} log=${join(dir, "out.log")}\n`,
     );
 
     // The task runs in the background: output appears while rc is still absent.

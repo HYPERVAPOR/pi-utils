@@ -32,7 +32,7 @@ import {
   type TaskMeta,
 } from "../cerberus/paths.ts";
 import { isBackgrounded, needsLongRun, SHELL_KEYWORDS } from "../cerberus/rules.ts";
-import { startBackground } from "../cerberus/runner.ts";
+import { backgroundBanner, startBackground } from "../cerberus/runner.ts";
 
 /** This package's own CLI, whatever directory the package happens to live in. */
 const LOCAL_BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "cerberus");
@@ -84,10 +84,10 @@ const PROMPT = [
   "- Resending the identical command is also accepted as `fg`.",
   `- Check a background task with \`${SHOWN_BIN} log <id>\` (output) and \`${SHOWN_BIN} rc <id>\` (exit code, or \`running\`).`,
   `- \`${SHOWN_BIN} wait <id>\` blocks up to 60s; \`${SHOWN_BIN} ls\` lists tasks (\`--full\` reprints the whole command); \`${SHOWN_BIN} stop <id>\` stops one.`,
-  "- For `log`, `rc` or `wait`, omit `<id>` to use the most recent task; the output echoes the chosen id.",
+  "- For `log`, `rc` or `wait`, omit `<id>` to use the most recent task; the chosen id is echoed on stderr.",
   "- A `timeout` on the bash call does not skip this choice; it only bounds the foreground run.",
   `- Background tasks have no deadline unless you pass \`${SHOWN_BIN} bg <id> --timeout N\`; otherwise stop one with \`${SHOWN_BIN} stop <id>\`.`,
-  "- A result beginning with `[cerberus] background` is a successful background start, not an error.",
+  "- A result beginning with `cerberus: background` is a successful background start, not an error.",
 ].join("\n");
 
 /** POSIX single-quote escaping: ' -> '\'' */
@@ -214,16 +214,9 @@ function startStaged(staged: Staged): { id: string; log: string; rc: string } | 
   return { id: staged.id, ...startBackground(task) };
 }
 
-function startedNote(started: { id: string; log: string; rc: string }): string {
-  return [
-    `[cerberus] background id=${started.id} log=${started.log} rc=${started.rc}`,
-    `Check it with \`${SHOWN_BIN} log ${started.id}\`, \`${SHOWN_BIN} rc ${started.id}\` or \`${SHOWN_BIN} wait ${started.id}\`.`,
-  ].join("\n");
-}
-
 function question(id: string): string {
   return [
-    "Cerberus: this may block for a long time. Nothing has run yet. Answer by running exactly one:",
+    "cerberus: this may block for a long time. Nothing has run yet. Answer by running exactly one:",
     `  ${SHOWN_BIN} fg ${id}   -> I must wait: run it in the foreground and return the output`,
     `  ${SHOWN_BIN} bg ${id}   -> I do not need it now: run it in the background, I will check later`,
     `  (background has no deadline; stop it with ${SHOWN_BIN} stop ${id})`,
@@ -265,7 +258,7 @@ export default function (pi: ExtensionAPI) {
         // The session already answered "do not wait": start it here and tell the
         // model it is running. Blocking keeps the original command from running too.
         const started = startStaged(stage(owner, cwd, original, 0));
-        if (started) return { block: true, reason: startedNote(started) };
+        if (started) return { block: true, reason: backgroundBanner(started.id, started.log) };
         return;
       }
 

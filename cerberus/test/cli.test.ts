@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const state = mkdtempSync(join(tmpdir(), "cerberus-cli-state-"));
@@ -79,10 +79,9 @@ try {
     const bg = cli(["bg", id], owner);
     assert.equal(bg.status, 0, bg.stderr);
     const dir = taskDir(owner, id);
-    assert.equal(
-      bg.stdout,
-      `[cerberus] background id=${id} log=${join(dir, "out.log")} rc=${join(dir, "rc")}\n`,
-    );
+    assert.equal(bg.stdout, `cerberus: background id=${id} log=${join(dir, "out.log")}\n`);
+    assert.match(bg.stdout, /^cerberus: /, "one prefix, lowercase");
+    assert.doesNotMatch(bg.stdout, /rc=/, "rc is derivable from the log path");
     assert.equal(readMeta(taskDir(owner, id))?.state, "running");
     assert.ok((readPid(taskDir(owner, id)) ?? 0) > 0);
 
@@ -138,6 +137,39 @@ try {
     assert.equal(fg.status, 0, fg.stderr);
     assert.match(fg.stdout, /nested-ok/);
     assert.equal(readRc(taskDir(owner, nested)), 0);
+  }
+
+  // --- tildify: home prints as ~ in the ls cwd column and the bg banner ---
+  {
+    const owner = "cli-tildify";
+    const savedState = process.env.XDG_STATE_HOME;
+    const homeState = mkdtempSync(join(homedir(), ".cerberus-tildify-"));
+    process.env.XDG_STATE_HOME = homeState;
+    // `cli()` pins the suite's own state root, so point at this one explicitly.
+    const cliHere = (args: string[]) =>
+      spawnSync(BIN, args, { env: { ...env(owner), XDG_STATE_HOME: homeState }, cwd: work, encoding: "utf8" });
+    try {
+      const id = stage(owner, "echo tildify\n");
+      const bg = cliHere(["bg", id]);
+      assert.equal(bg.status, 0, bg.stderr);
+      assert.match(
+        bg.stdout,
+        /^cerberus: background id=\S+ log=~\/\.cerberus-tildify-[^/]+\/cerberus\/tasks\/cli-tildify\/[^/]+\/out\.log\n$/,
+      );
+      assert.doesNotMatch(bg.stdout, /rc=/);
+      assert.equal(await waitFor(() => readRc(taskDir(owner, id)), 10_000), 0);
+
+      const homeCwd = join(homedir(), "tildify-probe");
+      stage(owner, "echo cwd\n", homeCwd);
+      const ls = cliHere(["ls", "--owner", owner]);
+      assert.equal(ls.status, 0, ls.stderr);
+      assert.match(ls.stdout, / ~\/tildify-probe /, "the cwd column is tildified");
+      const json = cliHere(["ls", "--owner", owner, "--json"]);
+      assert.ok(JSON.parse(json.stdout).some((row: { cwd?: string }) => row.cwd === homeCwd), "--json keeps absolute paths");
+    } finally {
+      process.env.XDG_STATE_HOME = savedState;
+      rmSync(homeState, { recursive: true, force: true });
+    }
   }
 
   // --- ls shows staged tasks; log/rc work before they start ---------------
@@ -324,24 +356,26 @@ try {
 
     const rc = cli(["rc"], owner);
     assert.equal(rc.status, 0, rc.stderr);
-    assert.equal(rc.stdout, `[cerberus] id=${newer} (most recent)\nrunning\n`);
+    assert.equal(rc.stdout, "running\n", "rc keeps its bare value on stdout");
+    assert.equal(rc.stderr, `cerberus: id=${newer} (most recent)\n`);
 
     const log = cli(["log"], owner);
     assert.equal(log.status, 0, log.stderr);
-    assert.equal(log.stdout, `[cerberus] id=${newer} (most recent)\n(no output yet)\n`);
+    assert.equal(log.stdout, "(no output yet)\n", "log output stays unprefixed");
+    assert.equal(log.stderr, `cerberus: id=${newer} (most recent)\n`);
 
     // Still running: wait times out without killing the task.
     const wait = cli(["wait", "--for", "1"], owner);
     assert.equal(wait.status, 124);
-    assert.match(wait.stdout, new RegExp(`\\[cerberus\\] id=${newer} \\(most recent\\)`));
-    assert.match(wait.stdout, /still running after 1s/);
+    assert.equal(wait.stderr, `cerberus: id=${newer} (most recent)\n`);
+    assert.match(wait.stdout, /^cerberus: still running after 1s/);
     assert.equal(readRc(taskDir(owner, newer)), undefined);
 
     // Finished: wait returns the task's exit code.
     writeRc(taskDir(owner, newer), 0);
     const finished = cli(["wait", "--for", "1"], owner);
     assert.equal(finished.status, 0);
-    assert.match(finished.stdout, new RegExp(`\\[cerberus\\] id=${newer} \\(most recent\\)`));
+    assert.equal(finished.stderr, `cerberus: id=${newer} (most recent)\n`);
     assert.match(finished.stdout, /\(no output yet\)/);
 
     // A consumed tombstone is newer but has no runnable output, so it is skipped.
@@ -356,7 +390,8 @@ try {
     });
     const afterConsumed = cli(["rc"], owner);
     assert.equal(afterConsumed.status, 0, afterConsumed.stderr);
-    assert.equal(afterConsumed.stdout, `[cerberus] id=${newer} (most recent)\n0\n`);
+    assert.equal(afterConsumed.stdout, "0\n");
+    assert.equal(afterConsumed.stderr, `cerberus: id=${newer} (most recent)\n`);
 
     // A tie in startedAt resolves by task directory name (largest wins).
     const tieOwner = "cli-recent-tie";
@@ -366,13 +401,13 @@ try {
     const expected = first > second ? first : second;
     const tie = cli(["rc"], tieOwner);
     assert.equal(tie.status, 0, tie.stderr);
-    assert.match(tie.stdout, new RegExp(`\\[cerberus\\] id=${expected} \\(most recent\\)`));
+    assert.equal(tie.stderr, `cerberus: id=${expected} (most recent)\n`);
 
     // Write/danger verbs still require an explicit id.
     for (const verb of ["bg", "fg", "stop"]) {
       const result = cli([verb], owner);
       assert.notEqual(result.status, 0, `${verb} without an id must fail`);
-      assert.match(result.stderr, /missing id/, verb);
+      assert.equal(result.stderr, `cerberus: error: ${verb}: missing id\n`, verb);
     }
   }
 

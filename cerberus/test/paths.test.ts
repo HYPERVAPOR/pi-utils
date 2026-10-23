@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = mkdtempSync(join(tmpdir(), "cerberus-paths-"));
@@ -33,6 +33,7 @@ const {
   RETENTION_BYTES,
   taskDir,
   tasksRoot,
+  tildify,
   writeDecision,
   writeMeta,
   writePid,
@@ -242,6 +243,17 @@ process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), "cerberus-size-"));
   process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), "cerberus-empty-"));
   assert.deepEqual(cleanup(), { expired: [], evicted: [], staged: [], freedBytes: 0 });
   assert.deepEqual(listTasks(), []);
+}
+
+// --- tildify: only a whole home prefix becomes ~ -------------------------
+{
+  const home = homedir();
+  assert.equal(tildify(join(home, "x")), "~/x");
+  assert.equal(tildify(join(home, "a/b/out.log")), "~/a/b/out.log");
+  assert.equal(tildify(home), "~");
+  assert.equal(tildify("/home/hvx/y"), "/home/hvx/y", "a sibling of home is not home");
+  assert.equal(tildify("relative/path"), "relative/path");
+  assert.equal(tildify("/tmp/x"), "/tmp/x");
 }
 
 rmSync(root, { recursive: true, force: true });
