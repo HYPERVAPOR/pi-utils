@@ -16,6 +16,7 @@ process.env.XDG_STATE_HOME = state;
 delete process.env.PI_SESSION_ID;
 
 const BIN = join(import.meta.dirname, "..", "..", "bin", "cerberus");
+const { taskShell } = await import("../runner.ts");
 const {
   allocateTask,
   cmdHash,
@@ -102,6 +103,41 @@ try {
     assert.equal(again.status, 1);
     assert.match(again.stderr, new RegExp(`already consumed: ${id}`));
     assert.equal(readRc(taskDir(owner, id)), 0);
+  }
+
+  // --- fg and the supervisor run `<bash> -c <cmd.sh text>` -----------------
+  {
+    const owner = "cli-shell";
+    // One shared helper feeds both paths, so this assertion covers fg and bg.
+    const probe = allocateTask(owner, cmdHash("probe"), work);
+    const probeText = "echo probe\n";
+    writeFileSync(join(probe.dir, "cmd.sh"), probeText);
+    const shell = taskShell(probe.dir);
+    assert.match(shell.file, /(^|\/)bash$/, "the task shell must be bash");
+    assert.deepEqual(shell.args, ["-c", probeText], "bash runs the exact cmd.sh text via -c");
+
+    // The command sees a bash `-c` body, not a script file, and not $SHELL.
+    const id = stage(owner, 'echo "shell=$0 flags=$- hasver=${BASH_VERSION:+yes}"\n');
+    const savedShell = process.env.SHELL;
+    process.env.SHELL = "/bin/false";
+    try {
+      const fg = cli(["fg", id], owner);
+      assert.equal(fg.status, 0, fg.stderr);
+      const log = readFileSync(join(taskDir(owner, id), "out.log"), "utf8");
+      assert.match(log, /shell=(\S*\/)?bash/, "$0 is bash, so $SHELL was not used");
+      assert.match(log, /flags=\S*c/, "the -c flag is set in the command body");
+      assert.match(log, /hasver=yes/);
+    } finally {
+      if (savedShell === undefined) delete process.env.SHELL;
+      else process.env.SHELL = savedShell;
+    }
+
+    // A `bash -c '...'` command survives the extra -c layer.
+    const nested = stage(owner, `bash -c 'sleep 0.3; echo nested-ok'\n`);
+    const fg = cli(["fg", nested], owner);
+    assert.equal(fg.status, 0, fg.stderr);
+    assert.match(fg.stdout, /nested-ok/);
+    assert.equal(readRc(taskDir(owner, nested)), 0);
   }
 
   // --- ls shows staged tasks; log/rc work before they start ---------------

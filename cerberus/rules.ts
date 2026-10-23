@@ -9,13 +9,21 @@
  * Wrappers that merely prefix another command (`sudo`, `env`, `nice`, `nohup`,
  * `timeout`, ...) are unwrapped first, and `bash -c '<script>'` / `eval '<script>'`
  * are re-parsed recursively. `timeout N cmd` is a wrapper, not an exemption: the
- * inner command still decides. So are the project runners `uv run`, `poetry run`,
- * `pipenv run`, `pdm run`, `hatch run`, and `python -m pytest` is recognised as
- * pytest. A script file passed to bash or python is not read: a miss is preferred.
+ * inner command still decides — unless N is a short leash (<= 15s), because then
+ * the wrapper bounds the whole line whatever it wraps. The project runners
+ * `uv run`, `poetry run`, `pipenv run`, `pdm run`, `hatch run` unwrap the same way,
+ * and `python -m pytest` is recognised as pytest. A script file passed to bash or
+ * python is not read: a miss is preferred.
  *
  * The gate's own CLI is exempt in both directions: `cerberus fg/bg/ls/...` is never
  * long (it is the answer to a gate, and staging it would nest the protocol), and
  * `invokesGate()` tells the CLI when a staged command would run the gate itself.
+ *
+ * Three syntax-only refinements keep false positives off the table: a `--version`,
+ * `--help` or `--dry-run` flag means the tool is not doing the work; `timeout`
+ * with N <= 15s caps the command itself; and `git clone`/`rsync`/`scp` only earn a
+ * gate when an operand is remote (`scheme://...` or `[user@]host:path`), since a
+ * local copy needs no answer.
  */
 
 export interface SimpleCommand {
@@ -164,6 +172,8 @@ interface Unwrapped {
   target: string[];
   /** true when a `setsid --fork`/`-f` prefix detaches before the command runs */
   forks: boolean;
+  /** true when a `timeout N` prefix bounds the command to <= 15s */
+  capped: boolean;
 }
 
 /**
@@ -173,6 +183,7 @@ interface Unwrapped {
 function unwrap(argv: string[]): Unwrapped {
   let i = 0;
   let forks = false;
+  let capped = false;
   for (;;) {
     while (i < argv.length && (ASSIGNMENT.test(argv[i]) || SHELL_KEYWORDS.has(argv[i]))) i++;
     if (i >= argv.length) break;
@@ -223,10 +234,16 @@ function unwrap(argv: string[]): Unwrapped {
       }
       break;
     }
-    // `timeout <duration> <command>`: the duration is not the command.
-    if (exec === "timeout" && i < argv.length && !argv[i].startsWith("-")) i++;
+    // `timeout <duration> <command>`: the duration is not the command. A duration
+    // the wrapper honours in 15s or less makes the whole line short, whatever it
+    // wraps; an unparsable duration keeps the old behaviour (the inner decides).
+    if (exec === "timeout" && i < argv.length && !argv[i].startsWith("-")) {
+      const seconds = parseSleepSeconds(argv[i]);
+      if (seconds !== undefined && seconds <= 15) capped = true;
+      i++;
+    }
   }
-  return { target: argv.slice(i), forks };
+  return { target: argv.slice(i), forks, capped };
 }
 
 function firstNonFlag(args: string[], from = 1): string | undefined {
@@ -313,6 +330,22 @@ function uvIsLong(args: string[]): boolean {
   return false;
 }
 
+/**
+ * `scheme://...` or `[user@]host:path` (colon before the first slash). A bare
+ * relative name, `.`, `~`, `./x` or `/abs` is a copy on this machine.
+ */
+function isRemoteOperand(operand: string): boolean {
+  if (operand.includes("://")) return true;
+  const colon = operand.indexOf(":");
+  if (colon <= 0) return false;
+  const slash = operand.indexOf("/");
+  return slash < 0 || colon < slash;
+}
+
+function hasRemoteOperand(args: string[]): boolean {
+  return args.some((arg) => !arg.startsWith("-") && isRemoteOperand(arg));
+}
+
 function sshHasRemoteCommand(args: string[]): boolean {
   // Options that take a value; without this `ssh -p 22 host` would look remote.
   const valueFlags = new Set([
@@ -344,6 +377,10 @@ function isLongCommand(argv: string[]): boolean {
   if (argv.length === 0) return false;
   const exec = basename(argv[0]);
   const args = argv;
+
+  // Asking a tool for its version, its help or a dry run never runs the work.
+  // (`-h`/`-v` are left alone: hostname/verbose mean the opposite.)
+  if (hasAnyFlag(args, ["--version", "--help", "--dry-run"])) return false;
 
   switch (exec) {
     case "sleep":
@@ -397,8 +434,12 @@ function isLongCommand(argv: string[]): boolean {
       return hasSubcommand(args, new Set(["build", "run", "compose"]));
     case "kubectl":
       return hasSubcommand(args, new Set(["wait", "rollout"]));
-    case "git":
-      return hasSubcommand(args, new Set(["clone", "fetch", "pull", "push", "lfs"]));
+    case "git": {
+      // A clone of a local path is a copy; only a remote one can stall on a network.
+      const sub = firstNonFlag(args);
+      if (sub === "clone") return hasRemoteOperand(args.slice(args.indexOf(sub) + 1));
+      return hasSubcommand(args, new Set(["fetch", "pull", "push", "lfs"]));
+    }
     case "pip":
     case "pip3":
       return pipIsLong(args);
@@ -412,7 +453,7 @@ function isLongCommand(argv: string[]): boolean {
       return firstNonFlag(args) !== undefined;
     case "rsync":
     case "scp":
-      return true;
+      return hasRemoteOperand(args.slice(1));
     case "ssh":
       return sshHasRemoteCommand(args);
     case "terraform":
@@ -427,7 +468,8 @@ const MAX_DEPTH = 3;
 function lineNeedsLongRun(command: string, depth: number): boolean {
   for (const simple of splitCommands(command)) {
     if (simple.background) continue;
-    const { target } = unwrap(simple.argv);
+    const { target, capped } = unwrap(simple.argv);
+    if (capped) continue;
     if (target.length === 0) continue;
     const exec = basename(target[0]);
 
