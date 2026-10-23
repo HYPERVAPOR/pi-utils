@@ -93,6 +93,12 @@ the built-in `gate` - so two panes can run different modes at the same time. It 
 read on every tool call and every gate check, so a flip needs no restart, and an old
 `{"mode": "capture"}` file is read as the new `default`. `gate` (below) is the default.
 
+In the TUI this session's mode sits beside the editor as `cerberus:capture`,
+`cerberus:gate` or `cerberus:disabled`, coloured by mode. Double-click it to cycle
+capture → gate → disabled for this session (a single click does nothing on purpose);
+it re-reads the config every couple of seconds and after every `/cerberus`, so a switch
+made in another pane shows up here too.
+
 **`capture` (`/cerberus on`)** replaces the built-in `bash` tool with the same
 definition - pi's own `createBashToolDefinition`, so schema, description, truncation
 and result formatting are the built-in's - and runs every command through the task
@@ -191,6 +197,7 @@ node cerberus/test/cli.test.ts
 node cerberus/test/e2e.test.ts
 node cerberus/test/capture.test.ts
 node extensions/cerberus/test/hook.test.ts
+node extensions/cerberus/test/widget.test.ts
 ```
 
 ## License
