@@ -6,11 +6,24 @@
  * kill the whole tree. `fg` streams the child's output to both out.log and our
  * stdout, and exits with the child's status.
  *
+ * Both run the command the same way pi's bash tool does: `<bash> -c <cmd.sh text>`
+ * (see `taskShell`). cmd.sh stays the exact record of what was asked; it is read as
+ * text, never executed as a file.
+ *
  * Both write `rc` atomically when the command ends. A timeout kills the tree and
  * records 124, the same code as coreutils `timeout`.
  */
 import { spawn } from "node:child_process";
-import { closeSync, openSync, readFileSync, readSync, statSync, writeSync } from "node:fs";
+import {
+  accessSync,
+  closeSync,
+  constants as fsConstants,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeSync,
+} from "node:fs";
 import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +43,41 @@ export const LOG_CAP_BYTES = 256 * 1024;
 
 /** Absolute path of the bin shim, so the CLI works without PATH. */
 export const CLI_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "cerberus");
+
+/**
+ * The same bash pi's bash tool picks: /bin/bash, then bash on PATH. `$SHELL` is not
+ * consulted (it is a login shell, often zsh, not what pi runs commands under).
+ */
+function findBash(): string | undefined {
+  try {
+    accessSync("/bin/bash", fsConstants.X_OK);
+    return "/bin/bash";
+  } catch {
+    // fall through to PATH
+  }
+  for (const dir of (process.env.PATH ?? "").split(":")) {
+    if (!dir) continue;
+    const candidate = join(dir, "bash");
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // keep looking
+    }
+  }
+  return undefined;
+}
+
+/**
+ * How a staged command runs, for both `fg` and the supervisor: `<bash> -c <text>`,
+ * the shape pi's bash tool uses, so the gate never changes the shell a command sees.
+ * cmd.sh is the record and is read as text; it is not executed as a file, and $SHELL
+ * (often zsh) is ignored. `sh -c` only when no bash exists anywhere.
+ */
+export function taskShell(dir: string): { file: string; args: string[] } {
+  const text = readFileSync(join(dir, "cmd.sh"), "utf8");
+  return { file: findBash() ?? "sh", args: ["-c", text] };
+}
 
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
@@ -120,12 +168,12 @@ export function runForeground(task: Task, timeoutSec?: number): Promise<number> 
   const startedAt = Date.now();
   if (meta) writeMeta(task.dir, { ...meta, state: "running", startedAt, pid: 0 });
 
-  const shell = process.env.SHELL || "bash";
+  const { file, args } = taskShell(task.dir);
   const fd = openSync(logPath(task.dir), "a", 0o644);
   const seconds = positiveSeconds(timeoutSec);
 
   return new Promise<number>((done) => {
-    const child = spawn(shell, [join(task.dir, "cmd.sh")], {
+    const child = spawn(file, args, {
       cwd: meta?.cwd,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
@@ -215,8 +263,8 @@ export function runForeground(task: Task, timeoutSec?: number): Promise<number> 
 }
 
 /**
- * `cerberus __supervise <dir> [timeoutSec]`: run cmd.sh with the log fd inherited
- * from the parent, record the exit code, forward signals, enforce the timeout.
+ * `cerberus __supervise <dir> [timeoutSec]`: run the staged command with the log fd
+ * inherited from the parent, record the exit code, forward signals, enforce the timeout.
  *
  * The parent already opened out.log as our stdout/stderr, so `inherit` writes the
  * command's output straight into the task log.
@@ -224,10 +272,10 @@ export function runForeground(task: Task, timeoutSec?: number): Promise<number> 
 export function supervise(dir: string, timeoutSec?: number): Promise<number> {
   const meta = readMeta(dir);
   const startedAt = meta?.startedAt ?? Date.now();
-  const shell = process.env.SHELL || "bash";
+  const { file, args } = taskShell(dir);
 
   return new Promise<number>((done) => {
-    const child = spawn(shell, [join(dir, "cmd.sh")], { cwd: meta?.cwd, stdio: "inherit" });
+    const child = spawn(file, args, { cwd: meta?.cwd, stdio: "inherit" });
     let timedOut = false;
     let forwarding = false;
 

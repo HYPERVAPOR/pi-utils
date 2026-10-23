@@ -46,6 +46,8 @@ const HITS: Array<[string, string]> = [
   ["kubectl wait", "kubectl wait --for=condition=Ready pod/x"],
   ["kubectl rollout", "kubectl rollout status deploy/x"],
   ["git clone", "git clone https://example.com/x.git"],
+  ["git clone scp-like remote", "git clone git@github.com:o/r.git"],
+  ["git clone ssh scheme", "git clone ssh://host/x.git"],
   ["git fetch", "git fetch origin"],
   ["git pull", "git pull"],
   ["git push", "git push"],
@@ -57,7 +59,8 @@ const HITS: Array<[string, string]> = [
   ["mvn", "mvn package"],
   ["gradle", "gradle build"],
   ["gradlew", "./gradlew build"],
-  ["rsync", "rsync -a src/ dest/"],
+  ["rsync remote", "rsync -a src/ user@host:dest/"],
+  ["rsync remote absolute", "rsync -a /tmp/a user@host:/tmp/b"],
   ["scp", "scp file host:/tmp"],
   ["ssh with remote command", "ssh host 'systemctl restart nginx'"],
   ["terraform apply", "terraform apply -auto-approve"],
@@ -66,8 +69,13 @@ const HITS: Array<[string, string]> = [
   ["timeout signal flag", "timeout --signal=KILL 60 pytest"],
   ["timeout value flags", "timeout -s KILL -k 5s 60 pytest"],
   ["timeout preserve status", "timeout --preserve-status 60 npm test"],
-  ["timeout around shell", `timeout 5 bash -c 'npm test'`],
+  ["timeout around shell", `timeout 30 bash -c 'npm test'`],
   ["timeout after keyword", "then timeout 60 npm test"],
+  // A timeout longer than 15s still lets the inner command decide.
+  ["timeout 40 sleep 30", "timeout 40 sleep 30"],
+  ["timeout 16 minutes-form", "timeout 16s sleep 30"],
+  ["timeout 20 tail", "timeout 20 tail -f log"],
+  ["timeout with -k before a long N", "timeout -k 5s 60 pytest"],
   // Leading shell syntax.
   ["if/then/fi", "if [ -f x ]; then npm run build; fi"],
   ["for/do/done", "for d in a b; do npm run build; done"],
@@ -104,6 +112,7 @@ const HITS: Array<[string, string]> = [
   ["dash -c", `dash -c 'git push'`],
   ["eval", `eval 'pytest -q'`],
   ["nested shell", `bash -c "bash -c 'sleep 30'"`],
+  ["bash -c sleep 25", `bash -c 'sleep 25'`],
   // Runners: the inner command decides (`uv run <cmd>`, `poetry run <cmd>`).
   ["uv run pytest", "uv run pytest -q"],
   ["uv run with value flags", "uv run --group test python -m pytest -q"],
@@ -190,6 +199,84 @@ const MISSES: Array<[string, string]> = [
 
 for (const [label, command] of MISSES) {
   assert.equal(needsLongRun(command), false, `should miss: ${label}: ${command}`);
+}
+
+// --- P0.1: a short `timeout` caps the command it wraps --------------------
+{
+  const misses: Array<[string, string]> = [
+    ["boundary 15", "timeout 15 sleep 15"],
+    ["boundary 15s", "timeout 15s sleep 30"],
+    ["short", "timeout 4 tail -f f"],
+    ["short with signal flags", "timeout -s KILL -k 5s 10 pytest"],
+    ["short around a shell", `timeout 5 bash -c 'npm test'`],
+    ["short around npm", "timeout 5 npm install"],
+    ["short after a keyword", "then timeout 5 npm test"],
+    ["short minutes suffix", "timeout 0.2m npm install"],
+  ];
+  for (const [label, command] of misses) {
+    assert.equal(needsLongRun(command), false, `short timeout should miss: ${label}: ${command}`);
+  }
+  // N > 15, or an N we cannot parse, keeps the inner command in charge.
+  assert.equal(needsLongRun("timeout 15.5 sleep 20"), true);
+  assert.equal(needsLongRun("timeout 1h sleep 30"), true);
+  assert.equal(needsLongRun("timeout soon sleep 30"), true);
+  assert.equal(needsLongRun("timeout 15"), false, "no command, nothing to run");
+}
+
+// --- P0.2: --version / --help / --dry-run never do the work ---------------
+{
+  const misses: Array<[string, string]> = [
+    ["pytest --version", "pytest --version"],
+    ["npm install --dry-run", "npm install --dry-run"],
+    ["cargo build --help", "cargo build --help"],
+    ["make --help", "make --help"],
+    ["tail --help", "tail -f x --help"],
+    ["git fetch --dry-run", "git fetch --dry-run"],
+    ["git push --dry-run", "git push --dry-run"],
+    ["rsync --dry-run", "rsync -a --dry-run host:/x /y"],
+    ["wrapped", "sudo -u root npm install --dry-run"],
+    ["in a shell body", `bash -c 'pytest --version'`],
+    ["under a long timeout", "timeout 600 npm install --dry-run"],
+  ];
+  for (const [label, command] of misses) {
+    assert.equal(needsLongRun(command), false, `informational flag should miss: ${label}: ${command}`);
+  }
+  // Prefix matches are not the flag; and -h/-v are deliberately not treated as help.
+  assert.equal(needsLongRun("pytest --versions"), true);
+  assert.equal(needsLongRun("npm test -h"), true, "-h is hostname to some tools");
+  assert.equal(needsLongRun("make -v"), true, "-v is verbose to some tools");
+}
+
+// --- P0.3: clone/copy commands need a remote operand ----------------------
+{
+  const misses: Array<[string, string]> = [
+    ["local clone", "git clone remote.git /tmp/x"],
+    ["dot clone", "git clone . /tmp/x"],
+    ["relative clone", "git clone ./repo dest"],
+    ["clone with branch flag", "git clone -b main remote.git /tmp/x"],
+    ["abs rsync", "rsync -a /tmp/a /tmp/b"],
+    ["dot rsync", "rsync -a ./src/ dest/"],
+    ["tilde rsync", "rsync -a ~/src /tmp/dest"],
+    ["local scp", "scp file /tmp/x"],
+    ["colon after a slash is still local", "rsync -a src/x:y dest/"],
+  ];
+  for (const [label, command] of misses) {
+    assert.equal(needsLongRun(command), false, `local copy should miss: ${label}: ${command}`);
+  }
+  const hits: Array<[string, string]> = [
+    ["url clone", "git clone https://x/y"],
+    ["scp-like clone", "git clone git@host:org/repo"],
+    ["remote rsync", "rsync -a /tmp/a user@host:/tmp/b"],
+    ["remote rsync bare host", "rsync -a src/ host:dest/"],
+    ["remote scp", "scp /tmp/x host:dest"],
+  ];
+  for (const [label, command] of hits) {
+    assert.equal(needsLongRun(command), true, `remote copy should hit: ${label}: ${command}`);
+  }
+  // fetch/pull/push keep the old behaviour, remote or not.
+  assert.equal(needsLongRun("git fetch origin"), true);
+  assert.equal(needsLongRun("git pull"), true);
+  assert.equal(needsLongRun("git push"), true);
 }
 
 // --- the gate's own CLI is exempt, and is recognised as control surface -----
