@@ -122,8 +122,10 @@ killing the task), `cerberus ls` (tasks; `--full` reprints the whole staged
 command, since the plain listing shows only its capped first line, and `--json`
 carries `cmd` verbatim plus `summary` for display), `cerberus stop <id>`. When `log`, `rc`
 or `wait` omit the id, they use this session's most recent task and echo the id
-they picked (`[cerberus] id=... (most recent)`). A result starting with
-`[cerberus] background` means the task started successfully. Tasks are reaped
+they picked on stderr (`cerberus: id=... (most recent)`), so the payload on
+stdout stays clean. A result starting with
+`cerberus: background` means the task started successfully (its single line also
+carries the log path, with `$HOME` shortened to `~`). Tasks are reaped
 when the TUI session shuts down; in `pi -p` / `--json` mode nothing is reaped,
 because the process is ending and no one would read the output. Those tasks run
 to completion and can be inspected with `cerberus ls` or cleaned later with

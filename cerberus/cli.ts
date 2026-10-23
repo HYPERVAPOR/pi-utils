@@ -20,11 +20,13 @@ import {
   readRc,
   safeName,
   taskStartedAt,
+  tildify,
   writeDecision,
   type Task,
 } from "./paths.ts";
 import {
   TIMEOUT_RC,
+  backgroundBanner,
   logPath,
   rcPath,
   readCapped,
@@ -53,6 +55,11 @@ export const stdIo: Io = {
   out: (text) => process.stdout.write(text),
   err: (text) => process.stderr.write(text),
 };
+
+/** Every diagnostic line starts here, so `cerberus: ` exists once. */
+const note = (text: string): string => `cerberus: ${text}\n`;
+/** Errors get one more level: `cerberus: error: …`. */
+const fail = (text: string): string => `cerberus: error: ${text}\n`;
 
 export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap|shim> ...
 
@@ -146,25 +153,26 @@ function readTarget(args: Args, command: string, io: Io): ReadTarget | number {
   if (id) {
     const task = findTask(id, owner);
     if (!task) {
-      io.err(`[cerberus] ${command}: no task ${id}\n`);
+      io.err(fail(`${command}: no task ${id}`));
       return 1;
     }
     return { task, mostRecent: false };
   }
   if (!owner) {
-    io.err(`[cerberus] ${command}: missing id (no owner for the most recent task)\n`);
+    io.err(fail(`${command}: missing id (no owner for the most recent task)`));
     return 2;
   }
   const task = mostRecentTask(owner);
   if (!task) {
-    io.err(`[cerberus] ${command}: no task for owner ${owner}\n`);
+    io.err(fail(`${command}: no task for owner ${owner}`));
     return 1;
   }
   return { task, mostRecent: true };
 }
 
+/** Which task a bare `log`/`rc`/`wait` picked: stderr, so stdout stays the payload. */
 function echoMostRecent(target: ReadTarget, io: Io): void {
-  if (target.mostRecent) io.out(`[cerberus] id=${target.task.id} (most recent)\n`);
+  if (target.mostRecent) io.err(note(`id=${target.task.id} (most recent)`));
 }
 
 /** The staged command exactly as it was asked, multi-line and all. */
@@ -276,7 +284,7 @@ function positiveSeconds(value: string | undefined): number | undefined {
 }
 
 function alreadyConsumed(id: string, io: Io): number {
-  io.err(`[cerberus] already consumed: ${id}\n`);
+  io.err(fail(`already consumed: ${id}`));
   return 1;
 }
 
@@ -298,7 +306,7 @@ function claimable(task: Task, id: string, io: Io): boolean {
   if (invokesGate(readCmd(task.dir))) {
     // A staged `cerberus fg ...` is the gate answering itself: the inner call would
     // wait on a task while this one waits on the inner call. Refuse, never hang.
-    io.err(`[cerberus] ${id}: staged command is the gate itself; not running it\n`);
+    io.err(fail(`${id}: staged command is the gate itself; not running it`));
     return false;
   }
   if (!claimTask(task)) {
@@ -321,30 +329,30 @@ function recordDecision(task: Task, decision: "fg" | "bg"): void {
 export function bgCommand(args: Args, io: Io = stdIo): number {
   const id = args.pos[0];
   if (!id) {
-    io.err("[cerberus] bg: missing id\n");
+    io.err(fail("bg: missing id"));
     return 2;
   }
   const task = findTask(id, ownerFrom(args));
   if (!task) {
-    io.err(`[cerberus] bg: no task ${id}\n`);
+    io.err(fail(`bg: no task ${id}`));
     return 1;
   }
   if (!claimable(task, id, io)) return 1;
   const started = startBackground(task, positiveSeconds(args.values.timeout));
   recordDecision(task, "bg");
-  io.out(`[cerberus] background id=${task.id} log=${started.log} rc=${started.rc}\n`);
+  io.out(`${backgroundBanner(task.id, started.log)}\n`);
   return 0;
 }
 
 export async function fgCommand(args: Args, io: Io = stdIo): Promise<number> {
   const id = args.pos[0];
   if (!id) {
-    io.err("[cerberus] fg: missing id\n");
+    io.err(fail("fg: missing id"));
     return 2;
   }
   const task = findTask(id, ownerFrom(args));
   if (!task) {
-    io.err(`[cerberus] fg: no task ${id}\n`);
+    io.err(fail(`fg: no task ${id}`));
     return 1;
   }
   if (!claimable(task, id, io)) return 1;
@@ -357,7 +365,7 @@ export function lsCommand(args: Args, io: Io = stdIo): number {
   const all = args.bools.has("all");
   const owner = ownerFrom(args);
   if (!all && !owner) {
-    io.err("[cerberus] ls: no owner (pass --owner, set PI_SESSION_ID, or use --all)\n");
+    io.err(fail("ls: no owner (pass --owner, set PI_SESSION_ID, or use --all)"));
     return 2;
   }
   let tasks = listTasks();
@@ -377,7 +385,7 @@ export function lsCommand(args: Args, io: Io = stdIo): number {
   const full = args.bools.has("full");
   for (const row of rows) {
     io.out(
-      `${row.id}  ${row.state}  ${formatElapsed(row.elapsedMs)}  ${row.cwd ?? "?"}  ${row.summary}\n`,
+      `${row.id}  ${row.state}  ${formatElapsed(row.elapsedMs)}  ${row.cwd ? tildify(row.cwd) : "?"}  ${row.summary}\n`,
     );
     if (!full) continue;
     // The whole command, so a truncated or multi-line one is still readable.
@@ -435,7 +443,7 @@ export async function waitCommand(args: Args, io: Io = stdIo): Promise<number> {
   }
 
   const elapsed = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-  io.out(`[cerberus] still running after ${seconds}s (${elapsed}s total); rc empty\n`);
+  io.out(note(`still running after ${seconds}s (${elapsed}s total); rc empty`));
   io.out(logText(task.dir));
   return TIMEOUT_RC;
 }
@@ -443,31 +451,31 @@ export async function waitCommand(args: Args, io: Io = stdIo): Promise<number> {
 export async function stopCommand(args: Args, io: Io = stdIo): Promise<number> {
   const id = args.pos[0];
   if (!id) {
-    io.err("[cerberus] stop: missing id\n");
+    io.err(fail("stop: missing id"));
     return 2;
   }
   const owner = ownerFrom(args);
   const task = findTask(id, owner);
   if (!task) {
-    io.err(`[cerberus] stop: no task ${id}\n`);
+    io.err(fail(`stop: no task ${id}`));
     return 1;
   }
   if (!args.bools.has("force") && owner && task.owner !== safeName(owner)) {
-    io.err(`[cerberus] stop: ${id} belongs to owner ${task.meta?.owner ?? task.owner}; pass --force\n`);
+    io.err(fail(`stop: ${id} belongs to owner ${task.meta?.owner ?? task.owner}; pass --force`));
     return 1;
   }
   const before = readRc(task.dir);
   if (before !== undefined) {
-    io.out(`[cerberus] ${id} already finished (rc=${before})\n`);
+    io.out(note(`${id} already finished (rc=${before})`));
     return 0;
   }
   const signalled = await terminate(task);
   if (!signalled) {
-    io.out(`[cerberus] ${id} is not running\n`);
+    io.out(note(`${id} is not running`));
     return 0;
   }
   const rc = readRc(task.dir);
-  io.out(`[cerberus] stopped ${id}${rc === undefined ? "" : ` (rc=${rc})`}\n`);
+  io.out(note(`stopped ${id}${rc === undefined ? "" : ` (rc=${rc})`}`));
   return 0;
 }
 
@@ -507,15 +515,15 @@ export async function reapCommand(args: Args, io: Io = stdIo): Promise<number> {
     const all = args.bools.has("all") || args.bools.has("all-stale");
     const owner = all ? undefined : ownerFrom(args);
     if (!all && !owner) {
-      io.err("[cerberus] reap --decisions: no owner (pass --owner, set PI_SESSION_ID, or use --all)\n");
+      io.err(fail("reap --decisions: no owner (pass --owner, set PI_SESSION_ID, or use --all)"));
       return 2;
     }
     const removed = clearDecisions(owner);
     if (!quiet) {
       io.out(
         removed.length === 0
-          ? "[cerberus] no decisions to clear\n"
-          : `[cerberus] cleared decisions for ${removed.join(", ")}\n`,
+          ? note("no decisions to clear")
+          : note(`cleared decisions for ${removed.join(", ")}`),
       );
     }
     return 0;
@@ -553,13 +561,13 @@ export async function reapCommand(args: Args, io: Io = stdIo): Promise<number> {
     if (args.bools.has("json")) {
       io.out(`${JSON.stringify(report, null, 2)}\n`);
     } else {
-      for (const id of report.killed) io.out(`[cerberus] reaped ${id}\n`);
-      for (const id of report.stale) io.out(`[cerberus] removed stale ${id}\n`);
+      for (const id of report.killed) io.out(note(`reaped ${id}`));
+      for (const id of report.stale) io.out(note(`removed stale ${id}`));
       if (report.orphaned.length > 0) {
-        io.out(`[cerberus] orphaned: ${report.orphaned.length} (see --json)\n`);
+        io.out(note(`orphaned: ${report.orphaned.length} (see --json)`));
       }
       if (report.killed.length + report.stale.length + report.orphaned.length === 0) {
-        io.out("[cerberus] nothing to reap\n");
+        io.out(note("nothing to reap"));
       }
     }
   }
@@ -622,43 +630,43 @@ export function shimCommand(args: Args, io: Io = stdIo): number {
   if (args.bools.has("remove")) {
     const dir = explicit ?? shimDirs().find((candidate) => isLinkTo(link(candidate), self));
     if (!dir) {
-      io.err(`[cerberus] shim: no ${SHIM_NAME} link of this package found\n`);
+      io.err(fail(`shim: no ${SHIM_NAME} link of this package found`));
       return 1;
     }
     try {
       rmSync(link(dir));
     } catch (err) {
-      io.err(`[cerberus] shim: ${(err as Error).message}\n`);
+      io.err(fail(`shim: ${(err as Error).message}`));
       return 1;
     }
-    io.out(`[cerberus] shim removed: ${link(dir)}\n`);
+    io.out(note(`shim removed: ${link(dir)}`));
     return 0;
   }
 
   const dir = explicit ?? shimDirs().find((d) => writableDir(d) && onPath(d)) ?? shimDirs().find(writableDir);
   if (!dir) {
-    io.err(`[cerberus] shim: no writable directory; pass --dir <dir> (tried ${shimDirs().join(", ")})\n`);
+    io.err(fail(`shim: no writable directory; pass --dir <dir> (tried ${shimDirs().join(", ")})`));
     return 1;
   }
   if (!writableDir(dir)) {
-    io.err(`[cerberus] shim: ${dir} is not a writable directory\n`);
+    io.err(fail(`shim: ${dir} is not a writable directory`));
     return 1;
   }
 
   const target = link(dir);
   if (isLinkTo(target, self)) {
-    if (!args.bools.has("quiet")) io.out(`[cerberus] shim already present: ${target}\n`);
+    if (!args.bools.has("quiet")) io.out(note(`shim already present: ${target}`));
     return 0;
   }
   // Only ever replace our own symlink; a real file there belongs to someone else.
   if (isSymlink(target)) rmSync(target);
   else if (lstatSync(target, { throwIfNoEntry: false }) !== undefined) {
-    io.err(`[cerberus] shim: ${target} exists and is not a symlink; leaving it alone\n`);
+    io.err(fail(`shim: ${target} exists and is not a symlink; leaving it alone`));
     return 1;
   }
   symlinkSync(self, target);
   if (args.bools.has("quiet")) return 0;
-  io.out(`[cerberus] shim -> ${target}${onPath(dir) ? "" : ` (warning: ${dir} is not on PATH)`}\n`);
+  io.out(note(`shim -> ${target}${onPath(dir) ? "" : ` (warning: ${dir} is not on PATH)`}`));
   return 0;
 }
 
@@ -679,7 +687,7 @@ export async function main(argv: string[]): Promise<number> {
       case "__supervise": {
         const dir = args.pos[0];
         if (!dir) {
-          process.stderr.write("[cerberus] __supervise: missing task dir\n");
+          process.stderr.write(fail("__supervise: missing task dir"));
           return 2;
         }
         const deadlineSec = args.pos[1] === undefined ? undefined : Number(args.pos[1]);
@@ -709,7 +717,7 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
-    process.stderr.write(`[cerberus] ${(err as Error).message}\n`);
+    process.stderr.write(fail((err as Error).message));
     return 1;
   }
 }

@@ -76,6 +76,10 @@ const HITS: Array<[string, string]> = [
   ["timeout 16 minutes-form", "timeout 16s sleep 30"],
   ["timeout 20 tail", "timeout 20 tail -f log"],
   ["timeout with -k before a long N", "timeout -k 5s 60 pytest"],
+  // `timeout 0` means "no limit" to coreutils, so the inner command still decides.
+  ["timeout 0 means no limit", "timeout 0 sleep 600"],
+  ["timeout 0.0 means no limit", "timeout 0.0 sleep 600"],
+  ["timeout 0s means no limit", "timeout 0s sleep 600"],
   // Leading shell syntax.
   ["if/then/fi", "if [ -f x ]; then npm run build; fi"],
   ["for/do/done", "for d in a b; do npm run build; done"],
@@ -212,6 +216,7 @@ for (const [label, command] of MISSES) {
     ["short around npm", "timeout 5 npm install"],
     ["short after a keyword", "then timeout 5 npm test"],
     ["short minutes suffix", "timeout 0.2m npm install"],
+    ["half a second", "timeout 0.5 sleep 600"],
   ];
   for (const [label, command] of misses) {
     assert.equal(needsLongRun(command), false, `short timeout should miss: ${label}: ${command}`);

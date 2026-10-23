@@ -236,10 +236,11 @@ function unwrap(argv: string[]): Unwrapped {
     }
     // `timeout <duration> <command>`: the duration is not the command. A duration
     // the wrapper honours in 15s or less makes the whole line short, whatever it
-    // wraps; an unparsable duration keeps the old behaviour (the inner decides).
+    // wraps. N = 0 means *no* limit to coreutils, so it is not a cap; an unparsable
+    // duration keeps the old behaviour (the inner command decides).
     if (exec === "timeout" && i < argv.length && !argv[i].startsWith("-")) {
       const seconds = parseSleepSeconds(argv[i]);
-      if (seconds !== undefined && seconds <= 15) capped = true;
+      if (seconds !== undefined && seconds > 0 && seconds <= 15) capped = true;
       i++;
     }
   }

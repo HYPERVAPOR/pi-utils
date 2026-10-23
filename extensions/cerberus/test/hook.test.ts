@@ -157,13 +157,13 @@ try {
     assert.ok(prompt.includes(`${SHOWN} stop <id>`), prompt);
     assert.ok(prompt.includes("omit `<id>` to use the most recent task"), prompt);
     assert.match(prompt, /resending the identical command is also accepted as `fg`/i);
-    assert.match(prompt, /\[cerberus\] background/);
+    assert.match(prompt, /cerberus: background/);
     assert.match(prompt, /timeout.*does not skip/i);
     assert.match(prompt, /no deadline/i);
     // No stale wording from the bounded-wait design.
     assert.equal(/15\s*s/i.test(prompt), false, prompt);
     assert.equal(/detached/i.test(prompt), false, prompt);
-    assert.equal(/--for|--deadline|\[cerberus\] detached/i.test(prompt), false, prompt);
+    assert.equal(/--for|--deadline|cerberus: detached/i.test(prompt), false, prompt);
     // Every invocation carries the path, never a bare command - unless the shim on
     // PATH *is* this file, in which case the bare name is the runnable spelling.
     if (SHOWN !== "cerberus") {

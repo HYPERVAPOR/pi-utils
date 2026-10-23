@@ -75,6 +75,16 @@ export function taskDir(owner: string, id: string): string {
   return join(ownerDir(owner), id);
 }
 
+/**
+ * `$HOME/x` -> `~/x`, for paths printed to the model. Only a whole path component
+ * matches: `/home/hvx/y` is somebody else's directory and stays as it is.
+ */
+export function tildify(path: string): string {
+  const home = homedir();
+  if (path === home) return "~";
+  return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
 export function cmdHash(text: string | Uint8Array): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 8);
 }
