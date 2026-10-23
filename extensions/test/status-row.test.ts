@@ -63,20 +63,20 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
   assert.equal(ui.calls[0].key, ROW_KEY);
   assert.equal(typeof ui.calls[0].content, "function");
   const row = (ui.calls[0].content as any)(t, theme);   // pi renders it once
-  assert.deepEqual(row.render(200).map(plain), ["hb_block:true"]);
+  assert.deepEqual(row.render(200).map(plain), ["hb_block:true"], "one part, no padding");
   assert.equal(t.renders, 0, "rendering alone asks for nothing");
 
   joinStatusRow(ui, "cerberus", cerberus, api);
   assert.equal(ui.calls.length, 1, "the second join does not re-set the widget");
   assert.equal(t.renders, 1, "it repaints through the tui the render remembered");
-  assert.deepEqual(row.render(200).map(plain), ["hb_block:truesuccess|cerberus:on"], "join order, one line");
+  assert.deepEqual(row.render(200).map(plain), ["hb_block:true  success|cerberus:on"], "join order, PART_GAP between");
 
   // The indicator part keeps working inside the row.
   shown = "disabled";
-  assert.deepEqual(row.render(200).map(plain), ["hb_block:truedim|cerberus:off"]);
+  assert.deepEqual(row.render(200).map(plain), ["hb_block:true  dim|cerberus:off"]);
 
   // 4. Column routing: the click lands on the part that owns those columns.
-  // `hb_block:true` is 13 columns, so the cerberus part starts at x=13.
+  // `hb_block:true` is 13 columns, then PART_GAP, so the cerberus part starts at x=15.
   assert.equal(row.render(200).length, 1);
   row.handleMouse(clickAt(3));
   assert.deepEqual(hits, ["hb_block:true@3"], "the left part gets its own x");
@@ -84,14 +84,20 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
   assert.deepEqual(hits, ["hb_block:true@3", "hb_block:true@12"], "still the left part");
   assert.equal(shown, "disabled", "cerberus did not see those clicks");
 
-  row.handleMouse(clickAt(13));   // the cerberus part owns [13, 13 + label)
+  // The gap columns belong to nobody: x=13 and x=14 are the two spaces.
+  row.handleMouse(clickAt(13));
+  row.handleMouse(clickAt(14));
+  assert.equal(hits.length, 2, "a click in the gap reaches no part");
+  assert.equal(shown, "disabled", "and does not reach cerberus either");
+
+  row.handleMouse(clickAt(15));   // the cerberus part owns [15, 15 + label)
   assert.equal(shown, "capture", "the double click reached cerberus's cycle");
   assert.equal(hits.length, 2, "and not the other part's handler");
-  assert.deepEqual(row.render(200).map(plain), ["hb_block:truesuccess|cerberus:on"]);
+  assert.deepEqual(row.render(200).map(plain), ["hb_block:true  success|cerberus:on"]);
 
   // A single click, the right button and a click past both parts do nothing.
-  row.handleMouse(clickAt(13, 1));
-  row.handleMouse({ ...clickAt(13), button: "right" });
+  row.handleMouse(clickAt(15, 1));
+  row.handleMouse({ ...clickAt(15), button: "right" });
   row.handleMouse(clickAt(190));
   assert.equal(shown, "capture", "no other click changes the mode");
 
@@ -108,6 +114,25 @@ const reset = () => delete (globalThis as any)[GLOBAL_KEY];
   leaveStatusRow(ui, "nobody");
   assert.equal(ui.calls.length, 2, "nothing more is written");
   assert.equal((globalThis as any)[GLOBAL_KEY].parts.size, 0);
+}
+
+// --- the gap is exactly two columns, only between parts ------------------
+// The same three labels are asserted in herdr-pair-coding's copy, so the two
+// implementations are pinned to the same composed line.
+{
+  reset();
+  const ui = fakeUi();
+  const label = (text: string) => () => ({ render: () => [text], invalidate() {} });
+  for (const [id, text] of [["a", "aaa"], ["b", "bbb"], ["c", "ccc"]]) {
+    joinStatusRow(ui, id, label(text) as any, api);
+  }
+  const row = (ui.calls[0].content as any)(tui(), theme);
+  assert.deepEqual(row.render(200).map(plain), ["aaa  bbb  ccc"], "two spaces between parts, none at the ends");
+
+  leaveStatusRow(ui, "b");
+  leaveStatusRow(ui, "c");
+  assert.deepEqual(row.render(200).map(plain), ["aaa"], "a lone part gets no padding");
+  leaveStatusRow(ui, "a");
 }
 
 // --- 3. a registry created by the other plugin first is reused ------------

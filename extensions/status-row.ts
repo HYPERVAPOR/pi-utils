@@ -21,6 +21,9 @@ import { tuiApi, type TuiApi } from "../cerberus/pi-package.ts";
 /** The widget key every participant uses - one key, one line. */
 export const ROW_KEY = "status-row";
 
+/** Blank columns between two parts, so two labels never read as one word. */
+export const PART_GAP = 2;
+
 /** A part's component factory: the same shape as a `setWidget` factory. */
 export type Part = (tui: Tui, theme: Theme) => Component;
 
@@ -62,8 +65,9 @@ function buildRegistry(api: TuiApi): Registry {
       // One HStack for the life of the widget, refilled on every render: a part that
       // joins later (or leaves) shows up on the next frame, without re-setting the
       // widget. `render(width)` returns the lines `Container` would, so pi's layout
-      // engine owns the horizontal allocation.
-      const stack: any = new api.HStack([]);
+      // engine owns the horizontal allocation. `gap` puts PART_GAP columns *between*
+      // parts only - `HStack` never pads the ends.
+      const stack: any = new api.HStack([], { gap: PART_GAP });
       let children: Component[] = [];
       return {
         render(width: number): string[] {
@@ -79,7 +83,7 @@ function buildRegistry(api: TuiApi): Registry {
         // horizontal stack would hand every click to the first part.
         handleMouse(event: any) {
           let start = 0;
-          for (const child of children) {
+          for (const [index, child] of children.entries()) {
             // The width `HStack` gives this child when the parts fit - which is every
             // terminal wide enough to show two short labels on one line.
             const width = child
@@ -88,7 +92,8 @@ function buildRegistry(api: TuiApi): Registry {
             if (event.x >= start && event.x < start + width) {
               return child.handleMouse?.({ ...event, x: event.x - start });
             }
-            start += width;
+            // The gap belongs to nobody: a click in it reaches no part.
+            start += width + (index === children.length - 1 ? 0 : PART_GAP);
           }
           return undefined;
         },
