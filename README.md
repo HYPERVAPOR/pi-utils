@@ -86,13 +86,21 @@ call, so a flip needs no restart). The default is `gate`.
 definition - pi's own `createBashToolDefinition`, so schema, description, truncation
 and result formatting are the built-in's - and runs every command through the task
 machinery. A command that finishes within the budget comes back exactly as the
-built-in would have returned it, byte for byte. A command that outlives the budget
-keeps running as a normal task and the tool result is one line:
+built-in would have returned it, byte for byte, and leaves no task behind (the id was
+never shown to anyone). A command that outlives the budget keeps running as a normal
+task and the tool result is one line:
 `cerberus: still running id=<id> (cerberus wait <id>)`. The budget is 10s, or
-`CERBERUS_CAPTURE_BUDGET_MS`. A `timeout` on the bash call is passed to the task, so
-the command dies with rc 124 and the usual "Command timed out after N seconds";
-cancelling the call stops the task. In this mode the gate below is a no-op: no
-rules, no questions.
+`CERBERUS_CAPTURE_BUDGET_MS`. `cerberus wait <id>` then prints what pi would have
+returned - the same truncation (last 2000 lines / 50KB), the same notice, and the
+task's `out.log` where pi's temp file would be. Cancelling the call stops the task.
+In this mode the gate below is a no-op: no rules, no questions.
+
+A `timeout` on the bash call is the *task's* deadline in capture mode, not this
+call's - the tool always gives up after the budget. If the deadline is shorter than
+the budget, the task is killed at the deadline and the result is pi's usual
+`Command timed out after N seconds` (rc 124). If the deadline is at or past the
+budget, the model gets `still running` first; the supervisor kills the task when the
+deadline comes, so `cerberus wait`/`rc` report rc 124 later.
 
 **`gate` (`/cerberus off`, the default)**: a gate in front of `bash`. Ordinary
 commands pass through byte-for-byte, and a
@@ -135,7 +143,8 @@ rejected.
 
 Background progress: `cerberus log [<id>]` (output), `cerberus rc [<id>]` (exit
 code, or `running` while empty), `cerberus wait [<id>]` (wait up to 60s without
-killing the task), `cerberus ls` (tasks; `--full` reprints the whole staged
+killing the task; once it finished, pi's formatted result rather than a log tail),
+`cerberus ls` (tasks; `--full` reprints the whole staged
 command, since the plain listing shows only its capped first line, and `--json`
 carries `cmd` verbatim plus `summary` for display), `cerberus stop <id>`. When `log`, `rc`
 or `wait` omit the id, they use this session's most recent task and echo the id

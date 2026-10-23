@@ -27,6 +27,7 @@ import {
   type Mode,
   type Task,
 } from "./paths.ts";
+import { resultText } from "./result.ts";
 import {
   TIMEOUT_RC,
   backgroundBanner,
@@ -426,6 +427,10 @@ export function clampWaitSec(value: unknown): number {
 /**
  * Wait for an existing task, not for a command: it only reads `rc` and the log, so
  * interrupting it drops the wait and leaves the task running.
+ *
+ * A finished task prints what pi would have returned for it - the same truncation and
+ * notice, with the log itself as the full output (`cerberus/result.ts`), not a log
+ * tail - so `wait` is a real substitute for the call that ran out of budget.
  */
 export async function waitCommand(args: Args, io: Io = stdIo): Promise<number> {
   const target = readTarget(args, "wait", io);
@@ -442,7 +447,10 @@ export async function waitCommand(args: Args, io: Io = stdIo): Promise<number> {
   }
 
   if (rc !== undefined) {
-    io.out(logText(task.dir));
+    const text = await resultText(task.dir);
+    // The text is pi's content: a command that ended with a newline keeps it, and a
+    // truncation notice (which has none) gets one so the terminal stays tidy.
+    io.out(text.endsWith("\n") ? text : `${text}\n`);
     return rc;
   }
 
