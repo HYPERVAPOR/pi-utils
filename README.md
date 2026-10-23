@@ -97,7 +97,10 @@ In the TUI this session's mode sits beside the editor as `cerberus:capture`,
 `cerberus:gate` or `cerberus:disabled`, coloured by mode. Double-click it to cycle
 capture → gate → disabled for this session (a single click does nothing on purpose);
 it re-reads the config every couple of seconds and after every `/cerberus`, so a switch
-made in another pane shows up here too.
+made in another pane shows up here too. The indicator shares one status line with other
+plugins that speak the same contract (`extensions/status-row.ts`): one widget key, parts
+laid out left to right, each keeping its own clicks - and it falls back to a line of its
+own when pi-tui has no `HStack`.
 
 **`capture` (`/cerberus on`)** replaces the built-in `bash` tool with the same
 definition - pi's own `createBashToolDefinition`, so schema, description, truncation
@@ -201,6 +204,7 @@ node cerberus/test/e2e.test.ts
 node cerberus/test/capture.test.ts
 node extensions/cerberus/test/hook.test.ts
 node extensions/cerberus/test/widget.test.ts
+node extensions/test/status-row.test.ts
 ```
 
 ## License
