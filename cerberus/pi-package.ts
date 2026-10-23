@@ -1,11 +1,11 @@
 /**
- * pi's own bash tool factories, resolved at runtime.
+ * pi's own package, resolved at runtime.
  *
  * `@earendil-works/pi-coding-agent` is a peer dependency. Inside pi the extension is
  * loaded through jiti aliases, so the bare specifier resolves; a plain
  * `node cerberus/test/...` run has no `node_modules` here, so the lookup then falls
  * back to the install pi runs itself. Either way the caller gets the real built-in
- * factory - never a copy of its schema, description or formatting.
+ * factory and the real truncation helpers - never a copy of pi's formatting.
  */
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -14,12 +14,26 @@ import { pathToFileURL } from "node:url";
 
 const PACKAGE = "@earendil-works/pi-coding-agent";
 
-/** The two bash factories this package builds on. */
-export interface PiBash {
+/** The parts of pi this package builds on. */
+export interface PiApi {
   /** pi's bash tool definition factory: same schema, description and formatting. */
   createBashToolDefinition: (cwd: string, options?: { operations?: unknown }) => any;
   /** pi's own local shell execution. */
   createLocalBashOperations: (options?: { shellPath?: string }) => any;
+  /** The truncation pi applies to bash output, so a replayed result matches. */
+  truncateTail: (content: string, options?: { maxLines?: number; maxBytes?: number }) => {
+    content: string;
+    truncated: boolean;
+    truncatedBy: "lines" | "bytes" | null;
+    totalLines: number;
+    totalBytes: number;
+    outputLines: number;
+    outputBytes: number;
+    lastLinePartial: boolean;
+  };
+  formatSize: (bytes: number) => string;
+  DEFAULT_MAX_LINES: number;
+  DEFAULT_MAX_BYTES: number;
 }
 
 function entryOf(dir: string): string | undefined {
@@ -49,22 +63,17 @@ function candidates(): string[] {
   return urls;
 }
 
-let loaded: Promise<PiBash> | undefined;
+let loaded: Promise<PiApi> | undefined;
 
-/** pi's bash factories, or a failure that names every place that was tried. */
-export function loadPiBash(): Promise<PiBash> {
+/** pi's own package, or a failure that names every place that was tried. */
+export function loadPi(): Promise<PiApi> {
   loaded ??= (async () => {
     const tried: string[] = [];
     for (const specifier of candidates()) {
       tried.push(specifier);
       try {
         const module = await import(specifier);
-        if (typeof module.createBashToolDefinition === "function") {
-          return {
-            createBashToolDefinition: module.createBashToolDefinition,
-            createLocalBashOperations: module.createLocalBashOperations,
-          };
-        }
+        if (typeof module.createBashToolDefinition === "function") return module as PiApi;
       } catch {
         // try the next candidate
       }

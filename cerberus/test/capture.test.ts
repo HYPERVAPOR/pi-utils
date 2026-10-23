@@ -21,11 +21,11 @@ delete process.env.CERBERUS_CAPTURE_BUDGET_MS;
 
 const capture = await import("../capture.ts");
 const paths = await import("../paths.ts");
-const { loadPiBash } = await import("../pi-package.ts");
+const { loadPi } = await import("../pi-package.ts");
 const extension = await import("../../extensions/cerberus.ts");
 
 const BIN = join(import.meta.dirname, "..", "..", "bin", "cerberus");
-const pi = await loadPiBash();
+const pi = await loadPi();
 
 /** Collect what the extension registers; no pi UI is involved in these calls. */
 const tools: any[] = [];
@@ -203,6 +203,37 @@ try {
     assert.equal(paths.readRc(task), 0);
   }
 
+  // --- D3b: wait formats big output like pi, not as a log tail -------------
+  {
+    process.env[capture.BUDGET_ENV] = "200";
+    paths.writeMode("capture");
+    // Each command outlives the budget first, so there is a task left to wait on.
+    const cases: Array<[string, string, RegExp, number]> = [
+      [">2000 lines", "sleep 0.5; seq 1 2500", /\[Showing lines \d+-2500 of 2500\. Full output: /, 9_000],
+      [
+        ">50KB",
+        "sleep 0.5; head -c 200000 /dev/zero | tr '\\0' x",
+        /\[Showing last .* of line 1 \(line is .*\). Full output: /,
+        49_000,
+      ],
+    ];
+    for (const [name, command, notice, minTail] of cases) {
+      const owner = `capture-wait-${name.replace(/\W+/g, "")}`;
+      const id = textOf(await run(ours, owner, command)).match(/id=(\S+)/)?.[1] as string;
+      const waited = spawnSync(BIN, ["wait", id, "--owner", owner], { encoding: "utf8" });
+      assert.equal(waited.status, 0, waited.stderr);
+      // pi's own formatting: truncation notice, and the task log as the full output.
+      const log = paths.taskDir(owner, id) + "/out.log";
+      const plain = textOf(await run(reference, `${owner}-ref`, command));
+      // Exactly pi's text, with the task log where pi's temp file was.
+      assert.equal(waited.stdout, `${plain.replaceAll(FULL_OUTPUT, log)}\n`, `${name}: wait prints pi's result`);
+      assert.match(waited.stdout, notice, `${name}: truncation notice`);
+      assert.ok(waited.stdout.length > minTail, `${name}: the whole tail, not 50 lines`);
+      assert.ok(readFileSync(log, "utf8").length > waited.stdout.length, `${name}: log stays the full output`);
+    }
+    delete process.env[capture.BUDGET_ENV];
+  }
+
   // --- abort: the task is stopped, and pi renders "Command aborted" --------
   {
     process.env[capture.BUDGET_ENV] = "8000";
@@ -231,7 +262,16 @@ try {
 
     paths.writeMode("capture");
     assert.equal((await run(ours, owner, command, undefined)).structuredContent.exit_code, 0);
-    assert.equal(paths.listOwner(owner).length, 1, "capture mode started a task");
+    assert.deepEqual(paths.listOwner(owner), [], "a capture run that made it in time leaves no task");
+
+    // Only the slow path keeps a task - and it is an ordinary one.
+    process.env[capture.BUDGET_ENV] = "150";
+    const slow = textOf(await run(ours, owner, "sleep 0.5"));
+    assert.match(slow, /^cerberus: still running id=\S+/, "over budget: one notice");
+    assert.equal(paths.listOwner(owner).length, 1, "the slow path keeps its task");
+    const slowId = slow.match(/id=(\S+)/)?.[1] as string;
+    spawnSync(BIN, ["wait", slowId, "--owner", owner, "--for", "10"], { encoding: "utf8" });
+    delete process.env[capture.BUDGET_ENV];
 
     assert.equal(capture.captureBudgetMs({ [capture.BUDGET_ENV]: "200" }), 200);
     assert.equal(capture.captureBudgetMs({ [capture.BUDGET_ENV]: "nope" }), capture.DEFAULT_BUDGET_MS);

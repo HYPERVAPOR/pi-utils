@@ -398,7 +398,8 @@ try {
     const finished = cli(["wait", "--for", "1"], owner);
     assert.equal(finished.status, 0);
     assert.equal(finished.stderr, `cerberus: id=${newer} (most recent)\n`);
-    assert.match(finished.stdout, /\(no output yet\)/);
+    // A finished task prints what pi would have returned, including its empty text.
+    assert.equal(finished.stdout, "(no output)\n");
 
     // A consumed tombstone is newer but has no runnable output, so it is skipped.
     const consumed = stage(owner, "echo consumed\n", work, Date.now());

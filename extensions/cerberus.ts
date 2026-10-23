@@ -43,7 +43,7 @@ import {
   type TaskMeta,
 } from "../cerberus/paths.ts";
 import { createOperations, runningNotice, SlowTask } from "../cerberus/capture.ts";
-import { loadPiBash } from "../cerberus/pi-package.ts";
+import { loadPi } from "../cerberus/pi-package.ts";
 import { isBackgrounded, needsLongRun, SHELL_KEYWORDS } from "../cerberus/rules.ts";
 import { backgroundBanner, startBackground } from "../cerberus/runner.ts";
 
@@ -248,9 +248,9 @@ function question(id: string): string {
  * one replaces the built-in in the registry (there is still exactly one `bash`).
  */
 async function registerBash(pi: ExtensionAPI): Promise<void> {
-  const bash = await loadPiBash();
-  const definition = bash.createBashToolDefinition(process.cwd(), {
-    operations: createOperations(bash.createLocalBashOperations()),
+  const piPackage = await loadPi();
+  const definition = piPackage.createBashToolDefinition(process.cwd(), {
+    operations: createOperations(piPackage.createLocalBashOperations()),
   });
   const run = definition.execute.bind(definition);
 
