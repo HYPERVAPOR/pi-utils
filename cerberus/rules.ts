@@ -9,8 +9,13 @@
  * Wrappers that merely prefix another command (`sudo`, `env`, `nice`, `nohup`,
  * `timeout`, ...) are unwrapped first, and `bash -c '<script>'` / `eval '<script>'`
  * are re-parsed recursively. `timeout N cmd` is a wrapper, not an exemption: the
- * inner command still decides. A script file passed to bash is not read: a miss is
- * preferred.
+ * inner command still decides. So are the project runners `uv run`, `poetry run`,
+ * `pipenv run`, `pdm run`, `hatch run`, and `python -m pytest` is recognised as
+ * pytest. A script file passed to bash or python is not read: a miss is preferred.
+ *
+ * The gate's own CLI is exempt in both directions: `cerberus fg/bg/ls/...` is never
+ * long (it is the answer to a gate, and staging it would nest the protocol), and
+ * `invokesGate()` tells the CLI when a staged command would run the gate itself.
  */
 
 export interface SimpleCommand {
@@ -23,10 +28,19 @@ const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 /** Leading shell syntax that is not part of the command that follows it. */
 export const SHELL_KEYWORDS = new Set([
   "if", "then", "else", "elif", "fi", "while", "until", "do", "done", "!", "{",
+  "case", "esac", "for", "select", "function",
 ]);
 const WRAPPERS = new Set([
   "sudo", "env", "command", "time", "nice", "stdbuf", "nohup", "setsid", "exec", "xargs",
   "timeout",
+]);
+/** `<runner> run <cmd>` / `<runner> exec <cmd>`: the inner command decides. */
+const RUNNERS = new Set(["uv", "poetry", "pipenv", "pdm", "hatch"]);
+/** Flags of `uv run` & friends that consume the next argument. */
+const RUNNER_VALUE_FLAGS = new Set([
+  "--group", "--with", "--without", "--only-group", "--python", "-p", "--project",
+  "--directory", "--extra", "--index", "--default-index", "--cache-dir", "--env-file",
+  "-e", "--package", "--lockfile", "--config-file", "-C",
 ]);
 
 /** Options of wrapper commands that consume the following argument. */
@@ -72,6 +86,8 @@ export function splitCommands(input: string): SimpleCommand[] {
   const end = (background: boolean) => {
     pushToken();
     if (argv.length > 0) commands.push({ argv, background });
+    // `(...) &`: the `&` follows a group that already closed its command.
+    else if (background && commands.length > 0) commands[commands.length - 1].background = true;
     argv = [];
     started = false;
   };
@@ -95,8 +111,15 @@ export function splitCommands(input: string): SimpleCommand[] {
       started = true;
       continue;
     }
-    if (char === " " || char === "\t" || char === "\r" || char === "(" || char === ")") {
+    if (char === " " || char === "\t" || char === "\r") {
       pushToken();
+      continue;
+    }
+    if (char === "(" || char === ")") {
+      // Grouping / subshell / `$(...)`: the body is its own command *and* the
+      // tokens after `)` start a fresh one, so `X=$(mktemp -d) timeout 900 uv
+      // run pytest` keeps the real command instead of folding it into argv[0].
+      end(false);
       continue;
     }
     if (char === "\n" || char === ";") {
@@ -154,6 +177,25 @@ function unwrap(argv: string[]): Unwrapped {
     while (i < argv.length && (ASSIGNMENT.test(argv[i]) || SHELL_KEYWORDS.has(argv[i]))) i++;
     if (i >= argv.length) break;
     const exec = basename(argv[i]);
+    if (RUNNERS.has(exec)) {
+      let j = i + 1;
+      while (j < argv.length && argv[j].startsWith("-")) {
+        const eq = argv[j].indexOf("=");
+        const name = eq > 0 ? argv[j].slice(0, eq) : argv[j];
+        j += RUNNER_VALUE_FLAGS.has(name) && eq < 0 ? 2 : 1;
+      }
+      if (j < argv.length && (argv[j] === "run" || argv[j] === "exec")) {
+        i = j + 1;
+        // Flags of `run` itself, then the inner command.
+        while (i < argv.length && argv[i].startsWith("-")) {
+          const eq = argv[i].indexOf("=");
+          const name = eq > 0 ? argv[i].slice(0, eq) : argv[i];
+          i += RUNNER_VALUE_FLAGS.has(name) && eq < 0 ? 2 : 1;
+        }
+        continue;
+      }
+      break;
+    }
     if (!WRAPPERS.has(exec)) break;
     if (exec === "setsid") {
       for (let j = i + 1; j < argv.length && argv[j].startsWith("-"); j++) {
@@ -223,14 +265,31 @@ function sleepIsLong(args: string[]): boolean {
 }
 
 const PACKAGE_SUBCOMMANDS = new Set(["install", "ci", "build", "test", "start", "dev"]);
+/** Flags that select a workspace; their value is not the subcommand. */
+const PACKAGE_VALUE_FLAGS = new Set([
+  "--filter", "-F", "-C", "--prefix", "--dir", "--cwd", "--workspace", "-w", "--scope",
+  "--registry", "--tag", "--cache", "--store-dir",
+]);
+
+/** Like `firstNonFlag`, but also skips the value of workspace-selecting flags. */
+function firstNonFlagValueAware(args: string[], from = 1): string | undefined {
+  for (let i = from; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith("-")) return arg;
+    const eq = arg.indexOf("=");
+    const name = eq > 0 ? arg.slice(0, eq) : arg;
+    if (PACKAGE_VALUE_FLAGS.has(name) && eq < 0) i++;
+  }
+  return undefined;
+}
 
 function packageManagerIsLong(args: string[]): boolean {
-  const sub = firstNonFlag(args);
+  const sub = firstNonFlagValueAware(args);
   if (sub === undefined) return false;
   if (PACKAGE_SUBCOMMANDS.has(sub)) return true;
   if (sub === "run") {
     const scriptIndex = args.indexOf("run");
-    return firstNonFlag(args, scriptIndex + 1) !== undefined;
+    return firstNonFlagValueAware(args, scriptIndex + 1) !== undefined;
   }
   return false;
 }
@@ -246,7 +305,7 @@ function pipIsLong(args: string[]): boolean {
 
 function uvIsLong(args: string[]): boolean {
   const sub = firstNonFlag(args);
-  if (sub === "install") return true;
+  if (sub === "install" || sub === "sync" || sub === "add") return true;
   if (sub === "pip") {
     const after = args.indexOf("pip");
     return firstNonFlag(args, after + 1) === "install";
@@ -312,6 +371,24 @@ function isLongCommand(argv: string[]): boolean {
       return hasAnyFlag(args, ["--build"]);
     case "pytest":
       return true;
+    case "python":
+    case "python3": {
+      // `python -m pytest` is pytest; a script file is not read (miss preferred).
+      const m = args.indexOf("-m");
+      return m > 0 && args[m + 1] === "pytest";
+    }
+    case "gh": {
+      // Watching a run / waiting on checks streams until CI finishes.
+      const sub = firstNonFlag(args);
+      const rest = args.slice(1);
+      if (sub === "run" && (rest.includes("watch") || hasAnyFlag(rest, ["--log", "--log-failed"]))) return true;
+      if (sub === "pr" && (rest.includes("watch") || hasAnyFlag(rest, ["--watch", "-w"]))) return true;
+      return false;
+    }
+    case "herdr": {
+      const sub = firstNonFlag(args);
+      return (sub === "agent" || sub === "pane") && args.includes("wait");
+    }
     case "jest":
     case "vitest":
     case "playwright":
@@ -354,6 +431,11 @@ function lineNeedsLongRun(command: string, depth: number): boolean {
     if (target.length === 0) continue;
     const exec = basename(target[0]);
 
+    // The gate's own CLI is never long, no matter where it appears: `cerberus
+    // fg/bg/...` is the *answer* to a gate, and staging or re-asking it would
+    // nest the protocol (a `cerberus fg` waiting on a `cerberus fg`).
+    if (exec === "cerberus") continue;
+
     if (SHELLS.has(exec) || exec === "eval") {
       if (depth >= MAX_DEPTH) continue;
       const script = exec === "eval" ? target.slice(1).join(" ") : shellScriptArg(target);
@@ -368,6 +450,22 @@ function lineNeedsLongRun(command: string, depth: number): boolean {
 /** True when any simple command in the line (including `-c` bodies) is on the list. */
 export function needsLongRun(command: string): boolean {
   return lineNeedsLongRun(command, 0);
+}
+
+/**
+ * True when the line invokes the gate's own CLI (`cerberus fg 42`,
+ * `cd x && cerberus ls`, `timeout 30 cerberus wait`). Such a line is control
+ * surface, never work: staging it would nest the protocol, and the CLI answers
+ * in milliseconds without waiting for anything but the command it is asked to run.
+ */
+export function invokesGate(command: string): boolean {
+  for (const simple of splitCommands(command)) {
+    if (simple.background) continue;
+    const { target } = unwrap(simple.argv);
+    if (target.length === 0) continue;
+    if (basename(target[0]) === "cerberus") return true;
+  }
+  return false;
 }
 
 /** True when the line detaches itself: `&` or `setsid --fork`/`-f`. */

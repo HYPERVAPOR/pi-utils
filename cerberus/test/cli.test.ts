@@ -380,6 +380,103 @@ try {
     assert.equal(readFileSync(target, "utf8"), "#!/bin/sh\n");
     rmSync(dir, { recursive: true, force: true });
   }
+  // --- ls shows the command: summary by default, everything with --full ----
+  {
+    const owner = "cli-ls";
+    const multi = `${"cd /home/hv/projs/proj && ".padEnd(0)}for f in $(find tests -name 'test_*.py' | sort); do timeout 300 uv run --group test pytest -q "$f" >/tmp/l.log 2>&1 || echo "FAIL $f"; done\necho "done"
+rm -f /tmp/l.log`;
+    const oneLine = "timeout 1800 uv run --group test python -m pytest tests/ -q";
+    const idMulti = stage(owner, multi);
+    const idOne = stage(owner, oneLine);
+
+    const plain = cli(["ls", "--owner", owner], owner);
+    assert.equal(plain.status, 0, plain.stderr);
+    const lineMulti = plain.stdout.split("\n").find((line) => line.includes(idMulti)) ?? "";
+    const lineOne = plain.stdout.split("\n").find((line) => line.includes(idOne)) ?? "";
+    // Multi-line commands are marked, not silently shortened.
+    assert.match(lineMulti, /\(\+2 lines\)/);
+    assert.ok(lineMulti.endsWith("... (+2 lines)"), lineMulti);
+    // A single line that fits is shown whole, with no marker.
+    assert.ok(lineOne.endsWith(oneLine), lineOne);
+    assert.equal(plain.stdout.includes("echo \"done\""), false, "plain ls stays one line per task");
+
+    const full = cli(["ls", "--owner", owner, "--full"], owner);
+    assert.equal(full.status, 0, full.stderr);
+    assert.match(full.stdout, /  \| echo "done"/);
+    assert.match(full.stdout, /  \| rm -f \/tmp\/l\.log/);
+    assert.match(full.stdout, /  \| timeout 1800 uv run --group test python -m pytest/);
+
+    const json = JSON.parse(cli(["ls", "--owner", owner, "--json"], owner).stdout);
+    const rowMulti = json.find((row: { id: string }) => row.id === idMulti);
+    const rowOne = json.find((row: { id: string }) => row.id === idOne);
+    assert.equal(rowMulti.cmd, multi, "json cmd is the command verbatim");
+    assert.match(rowMulti.summary, /\(\+2 lines\)/);
+    assert.equal(rowOne.cmd, oneLine);
+    assert.equal(rowOne.summary, oneLine);
+    assert.equal(rowMulti.dir, taskDir(owner, idMulti));
+  }
+
+  // --- the gate's own CLI answers immediately, never blocking --------------
+  {
+    const owner = "cli-fast";
+    // A task that would block for a minute, plus a staged gate call.
+    const slow = stage(owner, "sleep 60\n");
+    const bg = cli(["bg", slow], owner);
+    assert.equal(bg.status, 0, bg.stderr);
+    started.push({ owner, id: slow });
+    const gate = stage(owner, "cerberus fg 42\n");
+    const doomed = stage(owner, "sleep 60\n");
+    assert.equal(cli(["bg", doomed], owner).status, 0);
+    const shimDir = mkdtempSync(join(tmpdir(), "cerberus-fast-"));
+
+    const cases: Array<[string, string[]]> = [
+      ["ls", ["ls", "--owner", owner]],
+      ["log", ["log", slow]],
+      ["rc", ["rc", slow]],
+      ["reap --decisions", ["reap", "--decisions", "--owner", owner]],
+      ["reap --all-stale", ["reap", "--all-stale"]],
+      ["shim --quiet", ["shim", "--dir", shimDir, "--quiet"]],
+      ["shim --remove", ["shim", "--dir", shimDir, "--remove"]],
+      ["help", ["help"]],
+      ["bg of a staged gate call", ["bg", gate]],
+      ["fg of a staged gate call", ["fg", gate]],
+      ["wait --for 1", ["wait", slow, "--for", "1"]],
+    ];
+    for (const [label, argv] of cases) {
+      const began = Date.now();
+      const out = cli(argv, owner);
+      const ms = Date.now() - began;
+      assert.ok(ms < 3000, `${label} must not block (took ${ms}ms)`);
+      assert.equal(typeof out.status, "number", `${label}: ${out.stderr}${out.stdout}`);
+    }
+
+    // `stop` signals and reaps a real process; it must still be bounded.
+    {
+      const began = Date.now();
+      const stopped = cli(["stop", doomed, "--force"], owner);
+      assert.equal(stopped.status, 0, stopped.stderr);
+      assert.ok(Date.now() - began < 5000, "stop must not block on the task");
+      assert.notEqual(readRc(taskDir(owner, doomed)), undefined);
+    }
+
+    // A staged `cerberus ...` command is refused, never executed: running it would
+    // make the gate wait on the gate.
+    for (const verb of ["bg", "fg"]) {
+      const refused = cli([verb, gate], owner);
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.match(refused.stderr, /staged command is the gate itself/);
+    }
+    assert.equal(readRc(taskDir(owner, gate)), undefined);
+    assert.equal(readMeta(taskDir(owner, gate))?.state, "staged");
+
+    // `wait` is the only command that waits, and it is capped (1s here).
+    const began = Date.now();
+    assert.equal(cli(["wait", slow, "--for", "1"], owner).status, 124);
+    assert.ok(Date.now() - began < 3000, "wait --for 1 must be short");
+
+    rmSync(shimDir, { recursive: true, force: true });
+  }
+
 } finally {
   for (const task of started) cli(["stop", task.id, "--owner", task.owner, "--force"], task.owner);
   await sleep(100);

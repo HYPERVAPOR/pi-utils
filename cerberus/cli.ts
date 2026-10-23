@@ -33,6 +33,7 @@ import {
   supervise,
   terminate,
 } from "./runner.ts";
+import { invokesGate } from "./rules.ts";
 
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
@@ -58,7 +59,7 @@ export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap|shim> ...
   bg <id> [--timeout <sec>]  start a staged task in the background
   fg <id> [--timeout <sec>]  run a staged task in the foreground
   wait [<id>] [--for N]      block on an existing task (default 60s, max 300s)
-  ls [--all] [--json] [--owner <sid>]
+  ls [--all] [--json] [--full] [--owner <sid>]   (--full prints the whole command)
   log [<id>] [-n N]
   rc [<id>]
   stop <id> [--force]
@@ -166,15 +167,23 @@ function echoMostRecent(target: ReadTarget, io: Io): void {
   if (target.mostRecent) io.out(`[cerberus] id=${target.task.id} (most recent)\n`);
 }
 
-export function firstLine(dir: string): string {
+/** The staged command exactly as it was asked, multi-line and all. */
+export function commandText(dir: string): string {
   try {
-    const text = readFileSync(join(dir, "cmd.sh"), "utf8");
-    const nl = text.indexOf("\n");
-    const line = (nl === -1 ? text : text.slice(0, nl)).trim();
-    return line.length > 100 ? `${line.slice(0, 97)}...` : line;
+    return readFileSync(join(dir, "cmd.sh"), "utf8").replace(/\s+$/, "");
   } catch {
-    return "?";
+    return "";
   }
+}
+
+/** One compact line for `ls`: first line, capped, with a marker for the rest. */
+export function commandSummary(dir: string): string {
+  const text = commandText(dir);
+  if (text === "") return "?";
+  const lines = text.split("\n");
+  const head = lines[0].trim();
+  const shown = head.length > 100 ? `${head.slice(0, 97)}...` : head;
+  return lines.length > 1 ? `${shown} (+${lines.length - 1} lines)` : shown;
 }
 
 export interface TaskRow {
@@ -183,7 +192,10 @@ export interface TaskRow {
   state: string;
   elapsedMs: number;
   cwd?: string;
+  /** the command verbatim, every line */
   cmd: string;
+  /** first line, capped: what the text listing shows */
+  summary: string;
   startedAt: number;
   pid?: number;
   rc: number | null;
@@ -220,7 +232,8 @@ export function taskRows(tasks: Task[], now = Date.now()): TaskRow[] {
       state,
       elapsedMs,
       cwd: task.meta?.cwd,
-      cmd: firstLine(task.dir),
+      cmd: commandText(task.dir),
+      summary: commandSummary(task.dir),
       startedAt,
       pid,
       rc: rc ?? null,
@@ -267,10 +280,25 @@ function alreadyConsumed(id: string, io: Io): number {
   return 1;
 }
 
+/** The full staged command bytes, or "" when they cannot be read. */
+function readCmd(dir: string): string {
+  try {
+    return readFileSync(join(dir, "cmd.sh"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
 /** A task can be started only if it is still staged and has never run. */
 function claimable(task: Task, id: string, io: Io): boolean {
   if (task.meta?.state !== "staged" || readRc(task.dir) !== undefined) {
     alreadyConsumed(id, io);
+    return false;
+  }
+  if (invokesGate(readCmd(task.dir))) {
+    // A staged `cerberus fg ...` is the gate answering itself: the inner call would
+    // wait on a task while this one waits on the inner call. Refuse, never hang.
+    io.err(`[cerberus] ${id}: staged command is the gate itself; not running it\n`);
     return false;
   }
   if (!claimTask(task)) {
@@ -346,10 +374,14 @@ export function lsCommand(args: Args, io: Io = stdIo): number {
     io.out("no tasks\n");
     return 0;
   }
+  const full = args.bools.has("full");
   for (const row of rows) {
     io.out(
-      `${row.id}  ${row.state}  ${formatElapsed(row.elapsedMs)}  ${row.cwd ?? "?"}  ${row.cmd}\n`,
+      `${row.id}  ${row.state}  ${formatElapsed(row.elapsedMs)}  ${row.cwd ?? "?"}  ${row.summary}\n`,
     );
+    if (!full) continue;
+    // The whole command, so a truncated or multi-line one is still readable.
+    for (const line of row.cmd.split("\n")) io.out(`  | ${line}\n`);
   }
   return 0;
 }

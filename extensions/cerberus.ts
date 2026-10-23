@@ -83,7 +83,7 @@ const PROMPT = [
   `- Run it in the background: run \`${SHOWN_BIN} bg <id>\`.`,
   "- Resending the identical command is also accepted as `fg`.",
   `- Check a background task with \`${SHOWN_BIN} log <id>\` (output) and \`${SHOWN_BIN} rc <id>\` (exit code, or \`running\`).`,
-  `- \`${SHOWN_BIN} wait <id>\` blocks up to 60s; \`${SHOWN_BIN} ls\` lists tasks; \`${SHOWN_BIN} stop <id>\` stops one.`,
+  `- \`${SHOWN_BIN} wait <id>\` blocks up to 60s; \`${SHOWN_BIN} ls\` lists tasks (\`--full\` reprints the whole command); \`${SHOWN_BIN} stop <id>\` stops one.`,
   "- For `log`, `rc` or `wait`, omit `<id>` to use the most recent task; the output echoes the chosen id.",
   "- A `timeout` on the bash call does not skip this choice; it only bounds the foreground run.",
   `- Background tasks have no deadline unless you pass \`${SHOWN_BIN} bg <id> --timeout N\`; otherwise stop one with \`${SHOWN_BIN} stop <id>\`.`,

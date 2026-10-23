@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,9 @@ const fakePi = {
   },
 };
 const extension = await import("../../cerberus.ts");
+// What the prompt/tool result actually prints: a bare `cerberus` when the shim on
+// PATH points back at this file, an absolute (quoted) path otherwise.
+const SHOWN: string = extension.SHOWN_BIN;
 (extension.default as (pi: unknown) => void)(fakePi);
 
 assert.equal(typeof handlers.tool_call, "function");
@@ -85,6 +88,47 @@ async function waitFor(predicate: () => boolean, ms: number): Promise<boolean> {
 }
 
 try {
+  // --- tool_call: the gate's own CLI is never gated ------------------------
+  {
+    const call = async (owner: string, command: string) => {
+      const event: any = { type: "tool_call", toolName: "bash", input: { command } };
+      const result = await handlers.tool_call(event, context(owner));
+      return { event, result };
+    };
+
+    // Sanity: a long command is caught, so the assertions below mean something.
+    const caught = await call("hook-gate", "sleep 900");
+    assert.equal(caught.result?.block, true);
+
+    // Every way of answering a gate passes straight through: no block, no stage.
+    const cerberusCalls = [
+      `cerberus fg ${caught.result ? "some-id" : "some-id"}`,
+      `cerberus bg some-id`,
+      `cerberus wait some-id --for 1`,
+      `cerberus log`,
+      `cerberus rc`,
+      `cerberus ls`,
+      `cerberus stop some-id`,
+      `cerberus reap --decisions`,
+      `${BIN} fg some-id`,
+      `cd /tmp && cerberus ls`,
+      `timeout 30 cerberus fg some-id`,
+      `cerberus bg 'sleep 900'`,
+    ];
+    for (const command of cerberusCalls) {
+      const { event, result } = await call("hook-gate", command);
+      assert.equal(result, undefined, `must not gate: ${command}`);
+      // Rewritten to the runnable path, never staged.
+      assert.match(event.input.command, /cerberus/, command);
+      assert.equal(event.input.command.includes("<<"), false, command);
+    }
+
+    // Only the genuine long command was staged; no control call was.
+    const { listOwner } = await import("../../../cerberus/paths.ts");
+    const staged = listOwner("hook-gate").map((task) => readFileSync(join(task.dir, "cmd.sh"), "utf8"));
+    assert.deepEqual(staged, ["sleep 900"]);
+  }
+
   // --- before_agent_start: static section + guideline ---------------------
   {
     const options = () => ({
@@ -103,14 +147,14 @@ try {
     await handlers.before_agent_start(first, context("hook-prompt"));
     const prompt: string = first.systemPromptOptions.sections.cerberus;
     assert.ok(prompt.length > 0);
-    assert.ok(prompt.includes(`'${BIN}' fg <id>`), prompt);
-    assert.ok(prompt.includes(`'${BIN}' bg <id>`), prompt);
+    assert.ok(prompt.includes(`${SHOWN} fg <id>`), prompt);
+    assert.ok(prompt.includes(`${SHOWN} bg <id>`), prompt);
     assert.ok(prompt.includes("bg <id>"), prompt);
-    assert.ok(prompt.includes(`'${BIN}' log <id>`), prompt);
-    assert.ok(prompt.includes(`'${BIN}' rc <id>`), prompt);
-    assert.ok(prompt.includes(`'${BIN}' wait <id>`), prompt);
-    assert.ok(prompt.includes(`'${BIN}' ls`), prompt);
-    assert.ok(prompt.includes(`'${BIN}' stop <id>`), prompt);
+    assert.ok(prompt.includes(`${SHOWN} log <id>`), prompt);
+    assert.ok(prompt.includes(`${SHOWN} rc <id>`), prompt);
+    assert.ok(prompt.includes(`${SHOWN} wait <id>`), prompt);
+    assert.ok(prompt.includes(`${SHOWN} ls`), prompt);
+    assert.ok(prompt.includes(`${SHOWN} stop <id>`), prompt);
     assert.ok(prompt.includes("omit `<id>` to use the most recent task"), prompt);
     assert.match(prompt, /resending the identical command is also accepted as `fg`/i);
     assert.match(prompt, /\[cerberus\] background/);
@@ -120,12 +164,17 @@ try {
     assert.equal(/15\s*s/i.test(prompt), false, prompt);
     assert.equal(/detached/i.test(prompt), false, prompt);
     assert.equal(/--for|--deadline|\[cerberus\] detached/i.test(prompt), false, prompt);
-    // Every invocation carries the absolute path, never a bare command.
-    assert.equal(/(^|[^/'\w])cerberus (log|rc|ls|stop|bg|fg|wait)/.test(prompt), false, prompt);
+    // Every invocation carries the path, never a bare command - unless the shim on
+    // PATH *is* this file, in which case the bare name is the runnable spelling.
+    if (SHOWN !== "cerberus") {
+      assert.equal(/(^|[^/'\w])cerberus (log|rc|ls|stop|bg|fg|wait)/.test(prompt), false, prompt);
+    } else {
+      assert.match(prompt, /`cerberus (log|rc|ls|stop|bg|fg|wait) <id>`/);
+    }
 
     assert.equal(first.systemPromptOptions.promptGuidelines.length, 1);
-    assert.ok(first.systemPromptOptions.promptGuidelines[0].includes(`'${BIN}' fg <id>`));
-    assert.ok(first.systemPromptOptions.promptGuidelines[0].includes(`'${BIN}' bg <id>`));
+    assert.ok(first.systemPromptOptions.promptGuidelines[0].includes(`${SHOWN} fg <id>`));
+    assert.ok(first.systemPromptOptions.promptGuidelines[0].includes(`${SHOWN} bg <id>`));
 
     // Same text every run, and repeating the hook does not duplicate guidelines.
     const second: any = { type: "before_agent_start", messageType: "user", prompt: "again", systemPromptOptions: options() };

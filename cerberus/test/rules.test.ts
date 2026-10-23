@@ -5,7 +5,7 @@
  *   node cerberus/test/rules.test.ts
  */
 import assert from "node:assert/strict";
-import { isBackgrounded, needsLongRun, splitCommands } from "../rules.ts";
+import { invokesGate, isBackgrounded, needsLongRun, splitCommands } from "../rules.ts";
 
 const HITS: Array<[string, string]> = [
   ["sleep >= 15", "sleep 15"],
@@ -104,6 +104,35 @@ const HITS: Array<[string, string]> = [
   ["dash -c", `dash -c 'git push'`],
   ["eval", `eval 'pytest -q'`],
   ["nested shell", `bash -c "bash -c 'sleep 30'"`],
+  // Runners: the inner command decides (`uv run <cmd>`, `poetry run <cmd>`).
+  ["uv run pytest", "uv run pytest -q"],
+  ["uv run with value flags", "uv run --group test python -m pytest -q"],
+  ["uv run --with dep", "uv run --with httpx pytest -q"],
+  ["uv run --python=3.12", "uv run --python=3.12 pytest"],
+  ["uv sync", "uv sync --group test --frozen"],
+  ["poetry run", "poetry run pytest -q"],
+  ["pipenv run", "pipenv run pytest"],
+  ["python -m pytest", "python -m pytest -q tests/"],
+  ["python3 -m pytest", "python3 -m pytest -q"],
+  ["timeout around uv run", "timeout 1500 uv run --group test python -m pytest -q"],
+  ["uv run under a pipe", "uv run --group test pytest -q 2>&1 | tail -4"],
+  // Workspace flags do not hide the subcommand.
+  ["pnpm --filter build", "pnpm --filter landing build"],
+  ["pnpm -C build", "pnpm -C apps/x build"],
+  ["npm --prefix run", "npm --prefix apps/x run build"],
+  ["yarn --cwd test", "yarn --cwd app test"],
+  // CI watchers.
+  ["gh run watch", "gh run watch 39621557671 --exit-status"],
+  ["gh pr checks --watch", "timeout 900 gh pr checks 352 --watch --interval 20"],
+  ["gh pr checks -w", "gh pr checks 352 -w"],
+  ["gh run view --log", "gh run view 123 --log"],
+  ["herdr agent wait", "timeout 900 herdr agent wait bk-reviewer --timeout 900000"],
+  ["herdr pane wait", "herdr pane wait wF:p6"],
+  // Command substitution / subshell keeps the command that follows it.
+  ["assignment substitution", "LANCEDB_PATH=$(mktemp -d) timeout 1800 uv run --group test python -m pytest tests/ -q"],
+  ["assignment substitution before pytest", "LANCEDB_PATH=$(mktemp -d) pytest -q"],
+  ["substitution body is scanned", "out=$(timeout 300 npm test); echo done"],
+  ["case body", "case $rc in 0|5) ;; *) make build ;; esac"],
 ];
 
 for (const [label, command] of HITS) {
@@ -116,6 +145,19 @@ const MISSES: Array<[string, string]> = [
   ["timeout non-long command", "timeout 600 grep foo bar"],
   ["timeout without command", "timeout 600"],
   ["timeout backgrounded", "timeout 600 npm test &"],
+  ["uv run a script file", "uv run python tools/one_off.py"],
+  ["uv run python -c", "uv run python -c 'print(1)'"],
+  ["uv run a short command", "uv run true"],
+  ["uv pip list", "uv pip list"],
+  ["python -m http.server", "python3 -m http.server 8000"],
+  ["python script file", "python3 tools/report.py"],
+  ["gh pr view", "gh pr view 352 --json state"],
+  ["gh run list", "gh run list --limit 5"],
+  ["gh pr create", "gh pr create --fill"],
+  ["herdr pane read", "herdr pane read wF:p6 --lines 10"],
+  ["pnpm --filter install is fine but not a script", "pnpm --filter landing exec true"],
+  ["assignment only", "LANCEDB_PATH=$(mktemp -d)"],
+  ["substitution of a short command", "LANCEDB_PATH=$(mktemp -d) echo ok"],
   ["if body is harmless", "if [ -f x ]; then echo ok; fi"],
   ["backgrounded npm", "npm test &"],
   ["backgrounded nohup", "nohup npm test &"],
@@ -136,10 +178,37 @@ const MISSES: Array<[string, string]> = [
   ["echo with quoted separator", `echo "a && npm install"`],
   ["echo with quoted semicolon", `echo 'a; b'`],
   ["unknown command", "true"],
+  // The gate's own CLI is control surface: never work to be staged, whatever it
+  // is asked to carry, even after wrappers or in a compound line.
+  ["gate fg", "cerberus fg 42"],
+  ["gate bg", "cerberus bg 42"],
+  ["gate ls", "cd /tmp && cerberus ls"],
+  ["gate under timeout", "timeout 30 cerberus wait"],
+  ["gate carrying a long command", `cerberus bg 'sleep 900'`],
+  ["gate under sudo", "sudo cerberus stop 42"],
 ];
 
 for (const [label, command] of MISSES) {
   assert.equal(needsLongRun(command), false, `should miss: ${label}: ${command}`);
+}
+
+// --- the gate's own CLI is exempt, and is recognised as control surface -----
+{
+  assert.equal(invokesGate("cerberus fg 42"), true);
+  assert.equal(invokesGate("cerberus bg 42"), true);
+  assert.equal(invokesGate("cd /tmp && cerberus ls"), true);
+  assert.equal(invokesGate("timeout 30 cerberus wait 42"), true);
+  assert.equal(invokesGate("sudo cerberus stop 42"), true);
+  assert.equal(invokesGate("/home/hv/pi-utils/bin/cerberus bg 42"), true);
+  assert.equal(invokesGate("cerberus fg 42 && npm test"), true);
+  // Ordinary work, including a path that merely contains the word.
+  assert.equal(invokesGate("npm test"), false);
+  assert.equal(invokesGate("cat cerberus/rules.ts"), false);
+  assert.equal(invokesGate("cd cerberus && cat rules.ts"), false);
+  assert.equal(invokesGate("echo cerberus"), false);
+  // A gate call is never long, even when it carries a long command.
+  assert.equal(needsLongRun("cerberus bg 'sleep 900'"), false);
+  assert.equal(needsLongRun("cerberus fg 42"), false);
 }
 
 // --- splitting ------------------------------------------------------------
@@ -153,6 +222,15 @@ for (const [label, command] of MISSES) {
     commands.map((command) => command.background),
     [false, false, false, false, false, false],
   );
+
+  // `$(...)` bodies and the tokens after `)` are separate commands.
+  const substitution = splitCommands("LANCEDB_PATH=$(mktemp -d) timeout 9 uv run pytest");
+  assert.deepEqual(
+    substitution.map((command) => command.argv),
+    [["LANCEDB_PATH=$"], ["mktemp", "-d"], ["timeout", "9", "uv", "run", "pytest"]],
+  );
+  // A group keeps its `&`.
+  assert.equal(splitCommands("(a; b) & c")[1].background, true);
 
   const background = splitCommands("npm test & echo done");
   assert.deepEqual(background[0], { argv: ["npm", "test"], background: true });

@@ -81,8 +81,19 @@ it runs no scripts. `-e` users (a checkout or a profile) never install, so they 
 A gate in front of `bash`: ordinary commands pass through byte-for-byte, and a
 small conservative rule table (package builds/tests, `sleep` >= 15s, `tail -f`,
 `docker build`, `git push`, ...) catches only commands that look likely to block.
+It looks through wrappers and runners (`timeout`, `sudo`, `env`, `bash -c`,
+`uv run`, `poetry run`) at the command that actually decides, recognises
+`python -m pytest`, `gh run watch`, `pnpm --filter <pkg> build` and
+`herdr agent wait`, and keeps the command that follows a `$(...)` substitution.
 When one is caught, nothing runs: the command bytes are saved and the tool result
 asks one question with two short answers.
+
+`cerberus` never gates itself: a command whose command word is the gate's own CLI is
+never matched by the rule table and never staged (a staged `cerberus fg ...` is
+refused rather than run, so the protocol cannot nest). Every control answer - `bg`,
+`ls`, `log`, `rc`, `stop`, `reap`, `shim` - returns as soon as the state is read or
+the child is spawned; only `fg` waits for the staged command, and `wait` is capped
+at 60s by default (300s max).
 
 - `cerberus fg <id>` - run it now in the foreground, streaming output and passing
   the exit code through. This is the "yes".
@@ -107,7 +118,9 @@ rejected.
 
 Background progress: `cerberus log [<id>]` (output), `cerberus rc [<id>]` (exit
 code, or `running` while empty), `cerberus wait [<id>]` (wait up to 60s without
-killing the task), `cerberus ls` (tasks), `cerberus stop <id>`. When `log`, `rc`
+killing the task), `cerberus ls` (tasks; `--full` reprints the whole staged
+command, since the plain listing shows only its capped first line, and `--json`
+carries `cmd` verbatim plus `summary` for display), `cerberus stop <id>`. When `log`, `rc`
 or `wait` omit the id, they use this session's most recent task and echo the id
 they picked (`[cerberus] id=... (most recent)`). A result starting with
 `[cerberus] background` means the task started successfully. Tasks are reaped

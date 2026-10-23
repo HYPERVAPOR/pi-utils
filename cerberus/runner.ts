@@ -314,7 +314,9 @@ export function supervise(dir: string, timeoutSec?: number): Promise<number> {
 export async function terminate(task: Task): Promise<boolean> {
   const pid = task.meta?.pid ?? readPid(task.dir);
   if (!isAlive(pid)) {
-    await waitForRc(task.dir, 500);
+    // Nothing was ever started (still staged, or refused): no process can ever
+    // write an rc, so do not wait for one.
+    if (pid) await waitForRc(task.dir, 500);
     return false;
   }
   const target = pid as number;
