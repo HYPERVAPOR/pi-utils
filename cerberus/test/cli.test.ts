@@ -172,6 +172,28 @@ try {
     }
   }
 
+  // --- mode: on|off|status, one file under the state root ------------------
+  {
+    const config = join(state, "cerberus", "config.json");
+    const status = cli(["mode"]);
+    assert.equal(status.status, 0, status.stderr);
+    assert.equal(status.stdout, "cerberus: mode gate\n", "gate is the default");
+
+    const on = cli(["mode", "on"]);
+    assert.equal(on.stdout, "cerberus: mode capture\n");
+    assert.equal(JSON.parse(readFileSync(config, "utf8")).mode, "capture");
+    assert.equal(cli(["mode", "status"]).stdout, "cerberus: mode capture\n");
+    assert.equal(cli(["mode", "capture"]).stdout, "cerberus: mode capture\n", "the file's own word works too");
+
+    assert.equal(cli(["mode", "off"]).stdout, "cerberus: mode gate\n");
+    assert.equal(JSON.parse(readFileSync(config, "utf8")).mode, "gate");
+
+    const bad = cli(["mode", "bogus"]);
+    assert.equal(bad.status, 2);
+    assert.equal(bad.stderr, "cerberus: error: mode: expected on, off or status (got bogus)\n");
+    assert.equal(JSON.parse(readFileSync(config, "utf8")).mode, "gate", "a bad word changes nothing");
+  }
+
   // --- ls shows staged tasks; log/rc work before they start ---------------
   {
     const owner = "cli-staged";

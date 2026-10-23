@@ -17,11 +17,14 @@ import {
   listOwner,
   listTasks,
   pidOf,
+  readMode,
   readRc,
   safeName,
   taskStartedAt,
   tildify,
   writeDecision,
+  writeMode,
+  type Mode,
   type Task,
 } from "./paths.ts";
 import {
@@ -61,7 +64,7 @@ const note = (text: string): string => `cerberus: ${text}\n`;
 /** Errors get one more level: `cerberus: error: …`. */
 const fail = (text: string): string => `cerberus: error: ${text}\n`;
 
-export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap|shim> ...
+export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap|mode|shim> ...
 
   bg <id> [--timeout <sec>]  start a staged task in the background
   fg <id> [--timeout <sec>]  run a staged task in the foreground
@@ -71,6 +74,7 @@ export const USAGE = `usage: cerberus <bg|fg|wait|ls|log|rc|stop|reap|shim> ...
   rc [<id>]
   stop <id> [--force]
   reap [--owner <sid> | --all-stale] [--decisions] [--quiet] [--json]
+  mode on|off|status        switch the bash tool (on = capture, off = gate, default off)
   shim [--dir <dir>] [--remove] [--quiet]   link this CLI into a directory on PATH
 
 With no <id>, log/rc/wait use the most recent task of the current owner.
@@ -615,6 +619,25 @@ function isLinkTo(path: string, target: string): boolean {
   }
 }
 
+const MODE_WORDS: Record<string, Mode> = { on: "capture", off: "gate", capture: "capture", gate: "gate" };
+
+/** `cerberus mode on|off|status`: the same switch `/cerberus` sets, for scripts. */
+export function modeCommand(args: Args, io: Io = stdIo): number {
+  const word = (args.pos[0] ?? "").toLowerCase();
+  if (word === "" || word === "status") {
+    io.out(note(`mode ${readMode()}`));
+    return 0;
+  }
+  const mode = MODE_WORDS[word];
+  if (!mode) {
+    io.err(fail(`mode: expected on, off or status (got ${word})`));
+    return 2;
+  }
+  writeMode(mode);
+  io.out(note(`mode ${mode}`));
+  return 0;
+}
+
 /**
  * Put a `cerberus` symlink on PATH, so prompts and tool results can show the short
  * name instead of an absolute install path. `npm install` runs this with --quiet
@@ -705,6 +728,8 @@ export async function main(argv: string[]): Promise<number> {
         return await stopCommand(args);
       case "reap":
         return await reapCommand(args);
+      case "mode":
+        return modeCommand(args);
       case "shim":
         return shimCommand(args);
       case "help":
