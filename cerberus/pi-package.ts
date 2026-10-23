@@ -85,12 +85,25 @@ export function loadPi(): Promise<PiApi> {
   return loaded;
 }
 
-/** The one component the mode indicator needs from pi's TUI package. */
+/** The parts of pi's TUI package the status widgets use. */
 export interface TuiApi {
   MouseRegion: new (child: { render(width: number): string[]; invalidate(): void }, onMouse: (event: any) => unknown) => any;
+  /** Lays components out side by side - what the shared status row is made of. */
+  HStack: new (children?: any[], options?: { gap?: number }) => any;
+  /** Terminal columns of a rendered line, escape sequences excluded. */
+  visibleWidth: (text: string) => number;
 }
 
 let loadedTui: Promise<TuiApi> | undefined;
+let resolvedTui: TuiApi | undefined;
+
+/**
+ * The TUI module if it has already loaded. `joinStatusRow` has to be synchronous, so
+ * it reads the module through here after `loadTui()` has been awaited.
+ */
+export function tuiApi(): TuiApi | undefined {
+  return resolvedTui;
+}
 
 /** pi's TUI package, or a failure that names every place that was tried. */
 export function loadTui(): Promise<TuiApi> {
@@ -100,7 +113,7 @@ export function loadTui(): Promise<TuiApi> {
       tried.push(specifier);
       try {
         const module = await import(specifier);
-        if (typeof module.MouseRegion === "function") return module as TuiApi;
+        if (typeof module.MouseRegion === "function") return (resolvedTui = module as TuiApi);
       } catch {
         // try the next candidate
       }

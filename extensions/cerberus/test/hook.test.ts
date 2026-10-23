@@ -320,48 +320,57 @@ try {
       const ctx = indicatorCtx(owner);
       await handlers.session_start({ type: "session_start" }, ctx);
       assert.equal(widgets.length, 1);
-      assert.equal(widgets[0].key, "cerberus", "the widget key shutdown removes");
+      assert.equal(widgets[0].key, "status-row", "the indicator joins the shared row");
       assert.equal(typeof widgets[0].factory, "function");
       assert.equal(live.size, 1, "one timer, ~2s");
       assert.equal(tickers.length, 1);
 
-      // The widget renders this session's mode, with pi's own MouseRegion around it.
+      // The row renders this session's mode, with pi's own MouseRegion around it.
       const tui = { renders: 0, requestRender() { this.renders++; } };
       const theme = { fg: (color: string, text: string) => `${color}|${text}` };
       const component = widgets[0].factory(tui, theme);
-      assert.deepEqual(component.render(80), ["success|cerberus:capture"]);
+      // HStack marks segment boundaries with resets; the visible text is what matters.
+      const plain = (line: string) =>
+        line.replace(/\x1B\[[0-9;]*m/g, "").replace(/\x1B\]8;;\x07/g, "").trimEnd();
+      const shown = () => component.render(80).map(plain);
+      assert.deepEqual(shown(), ["success|cerberus:capture"]);
+      const clickAt = (x: number, clickCount = 2) => ({
+        type: "click", button: "left", clickCount, x, y: 0, width: 80, height: 1,
+        screenX: x, screenY: 0, shift: false, alt: false, ctrl: false,
+      });
 
       // Another session's switch does not leak in; this one's follows on the next tick.
       writeMode("disabled", "ind-b");
       tickers[0]();
-      assert.deepEqual(component.render(80), ["success|cerberus:capture"], "session b's mode stays on session b");
+      assert.deepEqual(shown(), ["success|cerberus:capture"], "session b's mode stays on session b");
       writeMode("gate", owner);
       tickers[0]();
-      assert.deepEqual(component.render(80), ["warning|cerberus:gate"], "the timer picks up this session's mode");
+      assert.deepEqual(shown(), ["warning|cerberus:gate"], "the timer picks up this session's mode");
 
       // /cerberus repaints without waiting for a tick.
       await commands.cerberus.handler("on", { ...ctx, ui: { notify: (text: string) => notes.push(text) } });
-      assert.deepEqual(component.render(80), ["success|cerberus:capture"], "the command refreshes the indicator");
+      assert.deepEqual(shown(), ["success|cerberus:capture"], "the command refreshes the indicator");
       assert.equal(readMode(owner), "capture");
 
       // A double click cycles capture -> gate -> disabled -> capture, and notifies.
       notes.length = 0;
-      const dbl = { type: "click", button: "left", clickCount: 2 };
-      component.handleMouse(dbl);
+      component.handleMouse(clickAt(2));
       assert.equal(readMode(owner), "gate", "a double click writes this session's mode");
-      assert.deepEqual(component.render(80), ["warning|cerberus:gate"]);
+      assert.deepEqual(shown(), ["warning|cerberus:gate"]);
       assert.deepEqual(notes, [`cerberus: mode gate (session ${owner})`]);
-      component.handleMouse({ ...dbl });   // gate -> disabled
-      component.handleMouse({ ...dbl });   // disabled -> capture
+      component.handleMouse(clickAt(2));   // gate -> disabled
+      component.handleMouse(clickAt(2));   // disabled -> capture
       assert.equal(readMode(owner), "capture", "the cycle wraps");
-      // A single click does nothing.
-      component.handleMouse({ type: "click", button: "left", clickCount: 1 });
+      // A single click does nothing, and so does a click past the indicator.
+      component.handleMouse(clickAt(2, 1));
       assert.equal(readMode(owner), "capture", "a single click is not a mode change");
+      component.handleMouse(clickAt(79));
+      assert.equal(readMode(owner), "capture", "a click in the empty part of the row is not ours");
 
       // Shutdown clears the widget and leaves no interval behind - twice, for the
       // session switch and /reload paths that converge here.
       await handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
-      assert.deepEqual(widgets.at(-1), { key: "cerberus", factory: undefined }, "the widget is removed");
+      assert.deepEqual(widgets.at(-1), { key: "status-row", factory: undefined }, "the row is removed");
       assert.equal(live.size, 0, "no setInterval survives shutdown");
       await handlers.session_shutdown({ type: "session_shutdown", reason: "reload" }, ctx);
       assert.equal(live.size, 0, "and shutting down twice is harmless");

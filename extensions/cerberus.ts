@@ -58,8 +58,10 @@ import {
   WIDGET_KEY,
   type Component,
   type MouseRegionCtor,
+  type Theme,
   type Tui,
 } from "./cerberus/widget.ts";
+import { joinStatusRow, leaveStatusRow } from "./status-row.ts";
 
 /** This package's own CLI, whatever directory the package happens to live in. */
 const LOCAL_BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "cerberus");
@@ -252,6 +254,8 @@ let shownMode: Mode = "gate";
 let shownOwner: string | undefined;
 let shownTui: Tui | undefined;
 let indicatorTimer: ReturnType<typeof setInterval> | undefined;
+/** true when the indicator is a part of the shared status row rather than its own line */
+let indicatorShared = false;
 
 /** Re-read this session's mode and repaint. Cheap, and safe to call when nothing is shown. */
 function refreshIndicator(): void {
@@ -261,17 +265,25 @@ function refreshIndicator(): void {
 }
 
 /** Stop drawing and reading. Idempotent: shutdown, reload and a second start may all call it. */
-function stopIndicator(): void {
+function stopIndicator(ui?: ExtensionContext["ui"]): void {
   if (indicatorTimer !== undefined) {
     clearInterval(indicatorTimer);
     indicatorTimer = undefined;
   }
+  // Only the path that put the widget there takes it away again.
+  if (ui) {
+    if (indicatorShared) leaveStatusRow(ui, INDICATOR_ID);
+    else ui.setWidget(WIDGET_KEY, undefined);
+  }
+  indicatorShared = false;
   shownTui = undefined;
   shownOwner = undefined;
 }
 
 /** How often the indicator re-reads the mode: fast enough to follow another pane. */
 const INDICATOR_MS = 2000;
+/** The indicator's id inside the shared status row. */
+const INDICATOR_ID = "cerberus";
 
 const MODE_WORDS: Record<string, Mode> = {
   on: "capture",
@@ -414,7 +426,7 @@ export default async function (pi: ExtensionAPI) {
     }
     shownOwner = owner;
     shownMode = readMode(owner);
-    ctx.ui.setWidget(WIDGET_KEY, (tui: Tui, theme): Component => {
+    const part = (tui: Tui, theme: Theme): Component => {
       shownTui = tui;
       return createIndicator({
         mode: () => shownMode,
@@ -427,7 +439,16 @@ export default async function (pi: ExtensionAPI) {
         notify: (message, level) => ctx.ui.notify(message, level),
         MouseRegion,
       })(tui, theme);
-    });
+    };
+    // Share one line with the other plugins if this pi-tui can (`status-row.ts`), and
+    // take a line of its own if it cannot - the indicator must never be the reason a
+    // session fails to start.
+    try {
+      joinStatusRow(ctx.ui, INDICATOR_ID, part);
+      indicatorShared = true;
+    } catch {
+      ctx.ui.setWidget(WIDGET_KEY, part);
+    }
     // The state file is the truth and anything can write it (another pane, the CLI),
     // so poll it instead of trusting a cached value, but not on every render.
     indicatorTimer ??= setInterval(refreshIndicator, INDICATOR_MS);
@@ -513,8 +534,7 @@ export default async function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async (event, ctx: ExtensionContext) => {
     // The widget and its timer go on every path (reload included: the session that
     // loads next registers its own).
-    stopIndicator();
-    if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
+    stopIndicator(ctx.hasUI ? ctx.ui : undefined);
     // reload keeps the process: tasks belong to the session that is still loading.
     if (event.reason === "reload") return;
     // In print/json mode the process is about to end and nobody will come back for
