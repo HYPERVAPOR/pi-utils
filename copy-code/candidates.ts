@@ -134,17 +134,9 @@ export function whereOf(candidate: Candidate): string {
 }
 
 /**
- * How a block id is written in notifications and errors. Kept in one place because it is
- * pure notation. Spelled out rather than `#7` (which reads like an issue reference) or
- * `[7]` (shorter, but still needs explaining).
- */
-export function idLabel(id: number): string {
-  return `code block ${id}`;
-}
-
-/**
  * The compact tag drawn above a block in the transcript: language and stable id,
- * e.g. `py-5`, or `text-5` when the fence names no language.
+ * e.g. `py-5`, or `text-5` when the fence names no language. Used by the gutter,
+ * picker rows, search, and notifications so they all name the block the same way.
  */
 export function blockTag(block: Pick<GutterBlock, "id" | "lang">): string {
   return `${block.lang || "text"}-${block.id}`;

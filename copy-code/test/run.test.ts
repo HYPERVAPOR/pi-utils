@@ -68,17 +68,17 @@ assert.deepEqual(
 );
 assert.deepEqual(offered.map((c) => c.distance), [1, 1, 1, 2, 2, 3]);
 assert.deepEqual(copied, ["package main"]);
-assert.deepEqual(notes, ["info: Copied code block 2 — 1 line (go) from 2 messages back."]);
+assert.deepEqual(notes, ["info: Copied go-2 — 1 line from 2 messages back."]);
 
-// `/copy-code <id>` picks by the id the gutter shows, not by list position.
+// `/copy-code <id>` picks by the number in the gutter tag, not by list position.
 reset();
 await copyCodeBlock(makeIo(branch), 4);
 assert.deepEqual(copied, ["ls"]);
-assert.deepEqual(notes, ["info: Copied code block 4 — 1 line (bash) from the last message."]);
+assert.deepEqual(notes, ["info: Copied bash-4 — 1 line from the last message."]);
 reset();
 await copyCodeBlock(makeIo(branch), 1);
 assert.deepEqual(copied, ["print(1)"]);
-assert.deepEqual(notes, ["info: Copied code block 1 — 1 line (python) from 3 messages back."]);
+assert.deepEqual(notes, ["info: Copied python-1 — 1 line from 3 messages back."]);
 reset();
 await copyCodeBlock(makeIo(branch), 3);
 assert.deepEqual(copied, ["const a = 1;"]);
@@ -113,7 +113,7 @@ reset();
 await copyCodeBlock(makeIo([assistant("```sh\nls\n```"), user("hi"), assistant("no code here")]));
 assert.equal(pickCalls, 0);
 assert.deepEqual(copied, ["ls"]);
-assert.deepEqual(notes, ["info: Copied code block 1 — 1 line (sh) from 2 messages back."]);
+assert.deepEqual(notes, ["info: Copied sh-1 — 1 line from 2 messages back."]);
 
 // No picker available: several blocks asks for a number.
 reset();
@@ -153,14 +153,14 @@ assert.deepEqual(notes, ["error: Copy failed: boom"]);
 // Lines and plurals.
 reset();
 await copyCodeBlock(makeIo([assistant("```ts\nconst a = 1;\nconst b = 2;\n```")]), 1);
-assert.deepEqual(notes, ["info: Copied code block 1 — 2 lines (ts) from the last message."]);
+assert.deepEqual(notes, ["info: Copied ts-1 — 2 lines from the last message."]);
 reset();
 await copyCodeBlock(makeIo([assistant("```\n```")]), 1);
-assert.deepEqual(notes, ["info: Copied code block 1 — 0 lines from the last message."]);
+assert.deepEqual(notes, ["info: Copied text-1 — 0 lines from the last message."]);
 
-// A block with no language omits the parenthesised tag.
+// A block with no language uses the `text-1` fallback tag.
 reset();
 await copyCodeBlock(makeIo([assistant("```\nplain\n```")]), 1);
-assert.deepEqual(notes, ["info: Copied code block 1 — 1 line from the last message."]);
+assert.deepEqual(notes, ["info: Copied text-1 — 1 line from the last message."]);
 
 console.log("run.test.ts: ok");

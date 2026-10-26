@@ -6,7 +6,7 @@
  * real clipboard, no model call. The picker itself is picker.ts, supplied by the
  * shell through `ui.pick`.
  */
-import { candidateById, collectCandidates, idLabel, type Candidate } from "./candidates.ts";
+import { candidateById, collectCandidates, tagOf, type Candidate } from "./candidates.ts";
 
 /** The slice of ctx.ui this flow needs. */
 export interface CopyCodeUi {
@@ -66,9 +66,7 @@ export async function copyCodeBlock(io: CopyCodeIo, requested?: number): Promise
   const lines = chosen.block.code === "" ? 0 : chosen.block.code.split("\n").length;
   const from = chosen.distance === 1 ? "the last message" : `${chosen.distance} messages back`;
   ui.notify(
-    `Copied ${idLabel(chosen.id)} — ${lines} line${lines === 1 ? "" : "s"}${
-      chosen.block.lang ? ` (${chosen.block.lang})` : ""
-    } from ${from}.`,
+    `Copied ${tagOf(chosen)} — ${lines} line${lines === 1 ? "" : "s"} from ${from}.`,
     "info",
   );
 }
