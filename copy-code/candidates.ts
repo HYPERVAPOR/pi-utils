@@ -20,11 +20,18 @@ export interface Candidate {
   distance: number;
 }
 
+/** A block as the gutter needs it: the stable id and the fence language. */
+export interface GutterBlock {
+  id: number;
+  /** First word of the fence info string, lowercased; empty when none. */
+  lang: string;
+}
+
 export interface Scan {
   /** Newest message first, for the picker. */
   candidates: Candidate[];
-  /** Trimmed assistant text part → ids of the blocks inside it, for the gutter. */
-  idsByPart: Map<string, number[]>;
+  /** Trimmed assistant text part → the blocks inside it, for the gutter. */
+  blocksByPart: Map<string, GutterBlock[]>;
 }
 
 const PREVIEW_WIDTH = 44;
@@ -64,7 +71,7 @@ function assistantTextParts(entry: unknown): string[] | undefined {
  */
 export function scan(entries: readonly unknown[]): Scan {
   const messages: { blocks: FencedBlock[]; ids: number[] }[] = [];
-  const idsByPart = new Map<string, number[]>();
+  const blocksByPart = new Map<string, GutterBlock[]>();
   let ambiguous = new Set<string>();
   let nextId = 1;
 
@@ -78,13 +85,18 @@ export function scan(entries: readonly unknown[]): Scan {
       const partBlocks = extractFencedBlocks(part);
       if (partBlocks.length === 0) continue;
       const partIds: number[] = [];
-      for (let i = 0; i < partBlocks.length; i++) partIds.push(nextId++);
-      if (idsByPart.has(part)) {
+      const partRefs: GutterBlock[] = [];
+      for (let i = 0; i < partBlocks.length; i++) {
+        const id = nextId++;
+        partIds.push(id);
+        partRefs.push({ id, lang: partBlocks[i]!.lang });
+      }
+      if (blocksByPart.has(part)) {
         // Same text twice in one session: drop the ids for it entirely.
-        idsByPart.delete(part);
+        blocksByPart.delete(part);
         ambiguous.add(part);
       } else if (!ambiguous.has(part)) {
-        idsByPart.set(part, partIds);
+        blocksByPart.set(part, partRefs);
       }
       blocks.push(...partBlocks);
       ids.push(...partIds);
@@ -102,7 +114,7 @@ export function scan(entries: readonly unknown[]): Scan {
     }
   }
 
-  return { candidates, idsByPart };
+  return { candidates, blocksByPart };
 }
 
 /** Newest-first candidates for the picker, dropping the gutter map. */
@@ -128,6 +140,15 @@ export function whereOf(candidate: Candidate): string {
  */
 export function idLabel(id: number): string {
   return `code block ${id}`;
+}
+
+/**
+ * The compact tag drawn above a block in the transcript: language and stable id,
+ * e.g. `py-5`, or `text-5` when the fence names no language. Separate from
+ * `idLabel()` because that one is prose for the picker and notifications.
+ */
+export function blockTag(block: Pick<GutterBlock, "id" | "lang">): string {
+  return `${block.lang || "text"}-${block.id}`;
 }
 
 /** Picker row label. The id comes from the candidate, so it cannot drift. */

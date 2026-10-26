@@ -18,16 +18,17 @@
  * SelectList, getSelectListTheme), not internal paths.
  *
  * It also registers a Markdown transformer that tags each code block with a
- * stable `#id` at render time (gutter.ts). The model never sees it: the
- * transformer runs only on the render path, while the model receives the
- * archived message text. The ID table is rebuilt at session start and at the
- * end of every assistant message (one scan, ~18 ms on the largest session).
+ * stable `lang-id` label (e.g. `py-5`, `text-9`) at render time (gutter.ts). The
+ * model never sees it: the transformer runs only on the render path, while the
+ * model receives the archived message text. The tag table is rebuilt at session
+ * start and at the end of every assistant message (one scan, ~18 ms on the
+ * largest session).
  *
  * Moving/renaming: these relative paths are resolved at load time. Leave a
  * compatibility link at the old path before moving anything.
  */
 import { copyToClipboard, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { scan, type Candidate } from "../copy-code/candidates.ts";
+import { scan, type Candidate, type GutterBlock } from "../copy-code/candidates.ts";
 import { withBlockIds } from "../copy-code/gutter.ts";
 import { CodePicker } from "../copy-code/picker.ts";
 import { copyCodeBlock } from "../copy-code/run.ts";
@@ -52,22 +53,22 @@ function run(ctx: ExtensionContext, requested?: number): Promise<void> {
 
 export default function (pi: ExtensionAPI) {
   // Render-time annotation: reads the session, never writes to the context.
-  let idsByPart: ReadonlyMap<string, readonly number[]> = new Map();
+  let blocksByPart: ReadonlyMap<string, readonly GutterBlock[]> = new Map();
   // message_end fires before persistence (the extension listener runs first, then
   // public listeners, then the message is archived), so the message that just
   // finished is not in the branch yet. Scanning it as a tail is what gives the
-  // newest answer an ID; nothing calls the transformer again afterwards. The ID
+  // newest answer an id; nothing calls the transformer again afterwards. The tag
   // is the same as a re-scan after persistence would produce.
   const refresh = (ctx: ExtensionContext, tail?: unknown): void => {
     const entries = ctx.sessionManager.getBranch();
-    idsByPart = scan(tail === undefined ? entries : [...entries, { type: "message", message: tail }]).idsByPart;
+    blocksByPart = scan(tail === undefined ? entries : [...entries, { type: "message", message: tail }]).blocksByPart;
   };
   // session_start also covers reason=reload, so /reload does not drop old IDs.
   pi.on("session_start", (_event, ctx) => refresh(ctx));
   pi.on("message_end", (event, ctx) => {
     if (event.message?.role === "assistant") refresh(ctx, event.message);
   });
-  pi.registerMarkdownTransformer((markdown, context) => withBlockIds(markdown, context, idsByPart));
+  pi.registerMarkdownTransformer((markdown, context) => withBlockIds(markdown, context, blocksByPart));
 
   pi.registerCommand("copy-code", {
     description: "Copy a code block from an earlier answer (usage: /copy-code [block id])",

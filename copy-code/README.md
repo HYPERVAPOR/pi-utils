@@ -13,9 +13,10 @@ broken indentation. This copies from the original Markdown instead.
 alt+c           same as /copy-code
 ```
 
-IDs are stable and increase over time. Each block gets a `code block N` line
-above it. Typing a plain number matches the ID exactly; anything else
-fuzzy-matches language and code text.
+IDs are stable and increase over time. Each block gets a `lang-N` tag above it
+(`py-5`, `ts-7`, `bash-23`; `text-N` when the fence names no language). The
+number after the hyphen is the ID. Typing a plain number matches the ID
+exactly; anything else fuzzy-matches language and code text.
 
 Load with `-e extensions/copy-code.ts` in a profile (profiles use `-ne`, so
 auto-discovery is off).

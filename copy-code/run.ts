@@ -27,8 +27,8 @@ export interface CopyCodeIo {
 
 /**
  * Copy one code block. `requested` is a block id (see candidates.ts), i.e. the number in
- * the `code block N` label above each block and in the picker; without it the picker runs
- * when there is more than one candidate.
+ * the `lang-N` tag above each block (`py-5` -> 5) and in the picker; without it the picker
+ * runs when there is more than one candidate.
  */
 export async function copyCodeBlock(io: CopyCodeIo, requested?: number): Promise<void> {
   const { ui } = io;

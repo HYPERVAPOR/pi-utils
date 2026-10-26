@@ -5,6 +5,7 @@
  */
 import assert from "node:assert/strict";
 import {
+  blockTag,
   candidateById,
   candidateOfValue,
   collectCandidates,
@@ -80,14 +81,20 @@ assert.deepEqual(
 );
 
 // The gutter map is keyed by the trimmed part text, exactly what the renderer passes in.
-const gutter = scan(branch).idsByPart;
-assert.deepEqual(gutter.get(oldest), [1, 2]);
-assert.deepEqual(gutter.get(middle), [3]);
-assert.deepEqual(gutter.get(newest), [4, 5]);
+const gutter = scan(branch).blocksByPart;
+assert.deepEqual(gutter.get(oldest), [
+  { id: 1, lang: "python" },
+  { id: 2, lang: "go" },
+]);
+assert.deepEqual(gutter.get(middle), [{ id: 3, lang: "ts" }]);
+assert.deepEqual(gutter.get(newest), [
+  { id: 4, lang: "bash" },
+  { id: 5, lang: "sh" },
+]);
 assert.equal(gutter.size, 3);
 
 // The same text twice in one session cannot be told apart, so it gets no ids at all.
-const ambiguous = scan([assistant(middle), assistant("prose"), assistant(middle)]).idsByPart;
+const ambiguous = scan([assistant(middle), assistant("prose"), assistant(middle)]).blocksByPart;
 assert.equal(ambiguous.has(middle), false);
 assert.deepEqual(ambiguous.get("prose"), undefined);
 // …and its blocks are still listed and copyable.
@@ -107,6 +114,12 @@ assert.equal(whereOf(found[2]!), "2 back");
 assert.equal(labelOf({ block: { lang: "", code: "\n\n" }, id: 9, distance: 1 }), "code block 9 · text · ");
 assert.equal(previewOf({ lang: "", code: "\n\n" }), "");
 assert.equal(previewOf({ lang: "ts", code: `${"x".repeat(80)}\n` }), `${"x".repeat(43)}…`);
+
+// The compact gutter tag is language + id, with `text` when there is no language.
+assert.equal(blockTag({ id: 5, lang: "py" }), "py-5");
+assert.equal(blockTag({ id: 7, lang: "ts" }), "ts-7");
+assert.equal(blockTag({ id: 23, lang: "bash" }), "bash-23");
+assert.equal(blockTag({ id: 9, lang: "" }), "text-9");
 
 // Search text carries the bare id, the language, and the whole block ("code block" would
 // make a search for "code" match everything).
