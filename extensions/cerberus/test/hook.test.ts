@@ -14,6 +14,8 @@ const state = mkdtempSync(join(tmpdir(), "cerberus-hook-state-"));
 const work = mkdtempSync(join(tmpdir(), "cerberus-hook-work-"));
 process.env.XDG_STATE_HOME = state;
 delete process.env.PI_SESSION_ID;
+// When the suite itself runs under capture, its cleanup must still reach the CLI.
+delete process.env.CERBERUS_TASK_ID;
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cerberus");
 

@@ -26,8 +26,9 @@ import {
   writeSync,
 } from "node:fs";
 import { constants } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TASK_ENV } from "./nesting.ts";
 import {
   isAlive,
   readMeta,
@@ -45,6 +46,19 @@ export const LOG_CAP_BYTES = 256 * 1024;
 
 /** Absolute path of the bin shim, so the CLI works without PATH. */
 export const CLI_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "bin", "cerberus");
+
+/**
+ * The environment a task's command gets: the caller's environment plus the marker
+ * that makes a nested `cerberus` call refuse itself. The marker is stripped first,
+ * so a task started from inside another task (or a task's own `pi` session) carries
+ * exactly one id: the task it is really running as.
+ */
+function taskEnv(id: string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...base };
+  delete env[TASK_ENV];
+  env[TASK_ENV] = id;
+  return env;
+}
 
 /**
  * The same bash pi's bash tool picks: /bin/bash, then bash on PATH. `$SHELL` is not
@@ -149,12 +163,17 @@ export function startBackground(task: Task, timeoutSec?: number, env?: NodeJS.Pr
   try {
     const args = [CLI_PATH, "__supervise", task.dir];
     if (seconds !== undefined) args.push(String(seconds));
+    // The supervisor is not the task's command: it must keep running even if this
+    // very process is a task, so the nesting marker is stripped here and added to
+    // the command by `supervise` / `runForeground`.
+    const supervisorEnv = { ...(env ?? process.env) };
+    delete supervisorEnv[TASK_ENV];
     const child = spawn(process.execPath, args, {
       detached: true,
       stdio: ["ignore", fd, fd],
       // The supervisor passes its environment on to the command, so a caller that
       // resolved a specific one (pi's shell env) gets exactly that.
-      env: env ?? process.env,
+      env: supervisorEnv,
     });
     child.unref();
     pid = child.pid ?? 0;
@@ -197,6 +216,7 @@ export function runForeground(task: Task, timeoutSec?: number): Promise<number> 
       cwd: meta?.cwd,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
+      env: taskEnv(task.id),
     });
 
     if (child.pid) {
@@ -295,7 +315,7 @@ export function supervise(dir: string, timeoutSec?: number): Promise<number> {
   const { file, args } = taskShell(dir);
 
   return new Promise<number>((done) => {
-    const child = spawn(file, args, { cwd: meta?.cwd, stdio: "inherit" });
+    const child = spawn(file, args, { cwd: meta?.cwd, stdio: "inherit", env: taskEnv(basename(dir)) });
     let timedOut = false;
     let forwarding = false;
 

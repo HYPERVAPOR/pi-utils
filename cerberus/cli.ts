@@ -28,6 +28,7 @@ import {
   type Mode,
   type Task,
 } from "./paths.ts";
+import { TASK_ENV, nestingError } from "./nesting.ts";
 import { resultText } from "./result.ts";
 import {
   TIMEOUT_RC,
@@ -737,6 +738,14 @@ export function shimCommand(args: Args, io: Io = stdIo): number {
 }
 
 export async function main(argv: string[]): Promise<number> {
+  // The runtime half of the nesting guard: every task's command inherits
+  // CERBERUS_TASK_ID, so a script, alias, `$BIN` or `sh -c` body that reaches the
+  // CLI is refused here even when the capture path could not see it.
+  const inTask = process.env[TASK_ENV];
+  if (inTask) {
+    process.stderr.write(`${nestingError({ snippet: argv.join(" "), inTask })}\n`);
+    return 64;
+  }
   try {
     cleanup();
   } catch {

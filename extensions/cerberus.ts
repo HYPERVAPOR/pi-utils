@@ -49,7 +49,8 @@ import {
   type Task,
   type TaskMeta,
 } from "../cerberus/paths.ts";
-import { createOperations, runningNotice, SlowTask } from "../cerberus/capture.ts";
+import { createOperations, NestedGate, runningNotice, SlowTask } from "../cerberus/capture.ts";
+import { nestingError } from "../cerberus/nesting.ts";
 import { loadPi, loadTui } from "../cerberus/pi-package.ts";
 import { isBackgrounded, needsLongRun, SHELL_KEYWORDS } from "../cerberus/rules.ts";
 import { backgroundBanner, startBackground } from "../cerberus/runner.ts";
@@ -128,6 +129,7 @@ const PROMPT = [
   "- A `timeout` on the bash call does not skip this choice; it only bounds the foreground run.",
   `- Background tasks have no deadline unless you pass \`${SHOWN_BIN} bg <id> --timeout N\`; otherwise stop one with \`${SHOWN_BIN} stop <id>\`.`,
   "- A result beginning with `cerberus: background` is a successful background start, not an error.",
+  `- Never run the CLI inside another command (\`sleep 20 && ${SHOWN_BIN} log <id>\`, \`echo hi && ${SHOWN_BIN} ls\`): a task must not invoke cerberus, so such a line is refused. Run the CLI as the whole bash call.`,
 ].join("\n");
 
 /** POSIX single-quote escaping: ' -> '\'' */
@@ -350,6 +352,17 @@ async function registerBash(pi: ExtensionAPI): Promise<void> {
       try {
         return await run(toolCallId, params, signal, onUpdate, ctx);
       } catch (err) {
+        // The line mixes real work with the CLI: it must not become a task, and
+        // the model gets an error that says why and what to run instead.
+        if (err instanceof NestedGate) {
+          return {
+            content: [
+              { type: "text" as const, text: nestingError({ snippet: err.command, bin: SHOWN_BIN }) },
+            ],
+            details: undefined,
+            isError: true,
+          };
+        }
         // The command outlived the budget: it keeps running and the model gets one
         // line it can act on instead of output that does not exist yet.
         if (err instanceof SlowTask) {

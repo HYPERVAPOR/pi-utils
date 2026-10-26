@@ -28,6 +28,8 @@ writeFileSync(fakeNpm, `#!/bin/sh\necho run >> "$COUNTER"\nexit 0\n`);
 chmodSync(fakeNpm, 0o755);
 process.env.XDG_STATE_HOME = state;
 process.env.COUNTER = counter;
+// When the suite itself runs under capture, its children must still reach the CLI.
+delete process.env.CERBERUS_TASK_ID;
 process.env.PATH = `${fakeBin}:${process.env.PATH ?? ""}`;
 delete process.env.PI_SESSION_ID;
 

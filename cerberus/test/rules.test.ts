@@ -5,7 +5,15 @@
  *   node cerberus/test/rules.test.ts
  */
 import assert from "node:assert/strict";
-import { invokesGate, isBackgrounded, needsLongRun, onlyInvokesGate, splitCommands, TEXT_FILTERS } from "../rules.ts";
+import {
+  invokesGate,
+  isBackgrounded,
+  needsLongRun,
+  nestsGate,
+  onlyInvokesGate,
+  splitCommands,
+  TEXT_FILTERS,
+} from "../rules.ts";
 
 const HITS: Array<[string, string]> = [
   ["sleep >= 15", "sleep 15"],
@@ -346,6 +354,39 @@ for (const [label, command] of MISSES) {
   assert.equal(onlyInvokesGate(""), false);
   // ... and `invokesGate` alone would have exempted all of them.
   assert.equal(invokesGate("cerberus ls && sleep 12"), true);
+}
+
+// --- nesting: real work plus the CLI is refused, never staged --------------
+{
+  assert.equal(nestsGate("sleep 20 && cerberus log 42"), true, "the reported sleep-poll");
+  assert.equal(nestsGate("echo hi && cerberus ls"), true);
+  assert.equal(nestsGate("cerberus ls && npm run build"), true);
+  assert.equal(nestsGate("cerberus log 42 | tee out.txt"), true);
+  assert.equal(nestsGate("cerberus ls | head -2 && sleep 12"), true);
+  assert.equal(nestsGate("bash -c 'cerberus log 42'"), true, "a -c body is the same line");
+  assert.equal(nestsGate("sudo bash -c 'cerberus wait 42'"), true);
+  assert.equal(nestsGate("sh -lc 'echo hi; cerberus rc 42'"), true);
+  assert.equal(nestsGate("sleep 20 && cerberus log 42 &"), true, "backgrounding does not hide it");
+
+  // The pure control plane is not nesting, and neither is a mention of the word.
+  assert.equal(nestsGate("cerberus wait 42 --for 60"), false);
+  assert.equal(nestsGate("cerberus ls; cerberus rc 42"), false);
+  assert.equal(nestsGate("echo cerberus"), false);
+  assert.equal(nestsGate("grep cerberus notes.txt"), false);
+  assert.equal(nestsGate("git commit -m 'cerberus: fix the notice'"), false);
+  assert.equal(nestsGate("cat 'cerberus log 42'"), false);
+  assert.equal(nestsGate("bash -c 'echo cerberus'"), false);
+  assert.equal(nestsGate("command -v cerberus"), false, "a lookup is not an invocation");
+  assert.equal(nestsGate("command -v cerberus && npm test"), false);
+  assert.equal(nestsGate("CERBERUS_MODE=on cerberus ls"), false, "a leading assignment is fine");
+  assert.equal(nestsGate("sleep 20"), false, "a bare sleep is a task, not nesting");
+
+  // `invokesGate` recurses into shell bodies; parsing a script file is out of scope.
+  assert.equal(invokesGate("bash -c 'cerberus log 42'"), true);
+  assert.equal(invokesGate("sh -c 'echo cerberus'"), false);
+  assert.equal(invokesGate("bash nested.sh"), false, "the runtime marker covers scripts");
+  assert.equal(invokesGate("command -v cerberus"), false, "`command -v` only looks");
+  assert.equal(invokesGate("command cerberus log 42"), true, "`command <cli>` runs it");
 }
 
 // --- splitting ------------------------------------------------------------

@@ -208,6 +208,9 @@ function unwrap(argv: string[]): Unwrapped {
       break;
     }
     if (!WRAPPERS.has(exec)) break;
+    // `command -v/-V` asks where a command is, it does not run it.
+    const commandFlag = argv[i + 1] ?? "";
+    if (exec === "command" && /^-[pVv]+$/.test(commandFlag) && /[vV]/.test(commandFlag)) break;
     if (exec === "setsid") {
       for (let j = i + 1; j < argv.length && argv[j].startsWith("-"); j++) {
         const arg = argv[j];
@@ -495,20 +498,33 @@ export function needsLongRun(command: string): boolean {
   return lineNeedsLongRun(command, 0);
 }
 
-/**
- * True when the line invokes the gate's own CLI (`cerberus fg 42`,
- * `cd x && cerberus ls`, `timeout 30 cerberus wait`). Such a line is control
- * surface, never work: staging it would nest the protocol, and the CLI answers
- * in milliseconds without waiting for anything but the command it is asked to run.
- */
-export function invokesGate(command: string): boolean {
+function lineInvokesGate(command: string, depth: number): boolean {
   for (const simple of splitCommands(command)) {
-    if (simple.background) continue;
+    // Unlike `needsLongRun`, a backgrounded CLI is still an invocation.
     const { target } = unwrap(simple.argv);
     if (target.length === 0) continue;
-    if (basename(target[0]) === "cerberus") return true;
+    const exec = basename(target[0]);
+    if (exec === "cerberus") return true;
+    // A `-c` body is the same line in another shell: `bash -c 'cerberus log 42'`
+    // nests exactly like the unquoted form, and no parser can see a script file.
+    if (SHELLS.has(exec) || exec === "eval") {
+      if (depth >= MAX_DEPTH) continue;
+      const script = exec === "eval" ? target.slice(1).join(" ") : shellScriptArg(target);
+      if (script !== undefined && lineInvokesGate(script, depth + 1)) return true;
+    }
   }
   return false;
+}
+
+/**
+ * True when the line invokes the gate's own CLI (`cerberus fg 42`,
+ * `cd x && cerberus ls`, `timeout 30 cerberus wait`), including a CLI hidden in a
+ * `bash -c` / `eval` body. Such a line is control surface, never work: staging it
+ * would nest the protocol, and the CLI answers in milliseconds without waiting for
+ * anything but the command it is asked to run.
+ */
+export function invokesGate(command: string): boolean {
+  return lineInvokesGate(command, 0);
 }
 
 /**
@@ -548,6 +564,19 @@ export function onlyInvokesGate(command: string): boolean {
     if (exec !== "cerberus" && !TEXT_FILTERS.has(exec)) return false;
   }
   return seen;
+}
+
+/**
+ * True when the line would nest the protocol: it does real work and also invokes
+ * the gate's CLI. Such a line must be refused, not staged - `sleep 20 && cerberus
+ * log 42` would create a task to wait on before the task it asks about.
+ *
+ * The deliberate gap is the pure control plane (`onlyInvokesGate`), which runs
+ * locally; a line that merely *mentions* `cerberus` (`echo cerberus`, `grep
+ * cerberus notes`) is not nesting either.
+ */
+export function nestsGate(command: string): boolean {
+  return !onlyInvokesGate(command) && invokesGate(command);
 }
 
 /** True when the line detaches itself: `&` or `setsid --fork`/`-f`. */

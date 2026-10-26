@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,10 @@ const work = mkdtempSync(join(tmpdir(), "cerberus-capture-work-"));
 process.env.XDG_STATE_HOME = state;
 delete process.env.PI_SESSION_ID;
 delete process.env.CERBERUS_CAPTURE_BUDGET_MS;
+// The suite is scaffolding, not a task: when it itself runs under capture, its own
+// children must be allowed to drive the CLI (the runtime nesting guard would
+// otherwise refuse every `spawnSync(BIN, ...)` below).
+delete process.env.CERBERUS_TASK_ID;
 
 const capture = await import("../capture.ts");
 const paths = await import("../paths.ts");
@@ -337,32 +341,51 @@ try {
     assert.equal(paths.listOwner(owner).length, 2, "two tasks, no `wait` task");
   }
 
-  // --- E2: one real command in the line puts it back on the capture path ---
+  // --- E2: real work plus the CLI is refused, not staged -------------------
   {
-    // Too short for any node process: every one of these lines must be captured.
-    process.env[capture.BUDGET_ENV] = "20";
     paths.writeMode("capture");
-    const owner = "capture-mixed";
+    const owner = "capture-nested";
     const cases: Array<[string, string]> = [
-      ["cerberus ls && sleep 12", `${BIN} ls && sleep 1`],
-      ["echo hi && cerberus ls", `echo hi && ${BIN} ls`],
-      ["cerberus ls && npm run build", `${BIN} ls && sleep 1`],
-      ["cerberus log 42 | tee out", `${BIN} log 1 | tee ${join(work, "out.txt")}`],
+      ["sleep, then log", `sleep 20 && ${BIN} log 1 --owner ${owner}`],
+      ["echo, then ls", `echo hi && ${BIN} ls --owner ${owner}`],
+      ["ls, then sleep", `${BIN} ls --owner ${owner} && sleep 1`],
+      ["cli piped into a writer", `${BIN} log 1 --owner ${owner} | tee ${join(work, "out.txt")}`],
+      ["hidden in bash -c", `bash -c '${BIN} log 1 --owner ${owner}'`],
     ];
     for (const [shape, command] of cases) {
       const result = await run(ours, owner, command);
-      assert.match(textOf(result), /^cerberus: still running id=\S+/, `${shape}: captured, so over budget`);
-      const id = textOf(result).match(/id=(\S+)/)?.[1] as string;
-      assert.ok(paths.listOwner(owner).some((task) => task.id === id), `${shape}: a real task`);
-      spawnSync(BIN, ["stop", id, "--owner", owner], { encoding: "utf8" });
+      assert.equal(result.isError, true, `${shape}: refused`);
+      assert.equal(result.structuredContent, undefined, `${shape}: nothing ran`);
+      assert.match(textOf(result), /refusing to run cerberus inside a task/, `${shape}: says why`);
+      assert.match(textOf(result), /wait <id>/, `${shape}: points at wait`);
+      assert.match(textOf(result), /Never poll with sleep/, `${shape}: no sleep-polling`);
+      assert.deepEqual(paths.listOwner(owner), [], `${shape}: nothing staged`);
     }
-    // The mixed line really ran both halves.
-    process.env[capture.BUDGET_ENV] = "20";
-    const mixed = textOf(await run(ours, owner, `echo hi && ${BIN} ls --owner ${owner}`));
-    const mixedId = mixed.match(/id=(\S+)/)?.[1] as string;
-    const finished = spawnSync(BIN, ["wait", mixedId, "--owner", owner, "--for", "10"], { encoding: "utf8" });
-    assert.match(finished.stdout, /^hi\n/, "the echo ran before the CLI did");
+    // A real command that only mentions the word is not nesting.
+    assert.equal(textOf(await run(ours, owner, "echo cerberus")), "cerberus\n", "a mention is not nesting");
+    assert.deepEqual(paths.listOwner(owner), [], "the mention left no task");
     delete process.env[capture.BUDGET_ENV];
+  }
+
+  // --- E2b: the runtime marker catches what the parser cannot --------------
+  {
+    paths.writeMode("capture");
+    const owner = "capture-runtime-nested";
+    // A script file is opaque to the parser; the CLI itself refuses at run time.
+    const script = join(work, "nested.sh");
+    writeFileSync(script, `${BIN} ls --owner ${owner}\n`);
+    const result = await run(ours, owner, `sh ${script}`);
+    assert.equal(result.structuredContent?.exit_code, 64, "the CLI refused inside the task");
+    assert.match(textOf(result), /refusing to run cerberus inside task \S+/, "the task id is named");
+    assert.match(textOf(result), /The cerberus call did not run/, "not `nothing was run`");
+    assert.deepEqual(paths.listOwner(owner), [], "the fast task was discarded as usual");
+
+    // The same backstop catches a CLI named through a variable, which the parser
+    // cannot resolve (`$B` is just a word to it).
+    const indirect = await run(ours, owner, `B=${BIN}; $B ls --owner ${owner}`);
+    assert.equal(indirect.structuredContent?.exit_code, 64, "the runtime marker catches $B");
+    assert.match(textOf(indirect), /refusing to run cerberus inside task \S+/);
+    assert.deepEqual(paths.listOwner(owner), [], "the indirect task was discarded too");
   }
   // --- F: the mode is per session, and `disabled` is plain pi ------------
   {

@@ -9,11 +9,15 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { TASK_ENV } from "../nesting.ts";
 
 const state = mkdtempSync(join(tmpdir(), "cerberus-cli-state-"));
 const work = mkdtempSync(join(tmpdir(), "cerberus-cli-work-"));
 process.env.XDG_STATE_HOME = state;
 delete process.env.PI_SESSION_ID;
+// Tests are scaffolding: when this suite runs under capture, its children must be
+// able to drive the CLI (the nesting marker is about tasks, not tests).
+delete process.env[TASK_ENV];
 
 const BIN = join(import.meta.dirname, "..", "..", "bin", "cerberus");
 const { taskShell } = await import("../runner.ts");
@@ -605,6 +609,23 @@ rm -f /tmp/l.log`;
     assert.ok(Date.now() - began < 3000, "wait --for 1 must be short");
 
     rmSync(shimDir, { recursive: true, force: true });
+  }
+
+  // --- the runtime nesting guard ------------------------------------------
+  {
+    const owner = "cli-nested";
+    const refused = spawnSync(BIN, ["ls"], {
+      env: { ...env(owner), [TASK_ENV]: "task-abc" },
+      cwd: work,
+      encoding: "utf8",
+    });
+    assert.equal(refused.status, 64, "a task's command cannot run the CLI");
+    assert.match(refused.stderr, /refusing to run cerberus inside task task-abc/);
+    assert.match(refused.stderr, /The cerberus call did not run/);
+    assert.match(refused.stderr, /wait <id>/, "points at the right call");
+
+    // Outside a task the very same call works.
+    assert.equal(cli(["ls"], owner).status, 0);
   }
 
 } finally {

@@ -132,9 +132,17 @@ One exception: a line that *starts* with the CLI itself (`cerberus wait <id>`,
 `cerberus ls`, `'.../bin/cerberus' log <id>`, and `cerberus wait <id> | tail -5`) runs
 locally instead, because the CLI is the control plane, not work - one call collects a
 task, instead of a `wait` task that needs a `wait` of its own. Piping into a text
-filter (`head tail grep sed awk cat wc sort uniq cut tr nl jq column`) is part of that;
-anything else in the line puts it back on the capture path, so `cerberus ls && npm run
-build` and `cerberus ls | head -2 && sleep 12` are captured like any other line.
+filter (`head tail grep sed awk cat wc sort uniq cut tr nl jq column`) is part of that.
+
+A line that mixes real work with the CLI is refused, not staged: `sleep 20 && cerberus
+log <id>`, `echo hi && cerberus ls`, `cerberus ls && npm run build`, `bash -c 'cerberus
+...'`. A task must not invoke the control plane - the call would become a task of its
+own, and the model would wait on the waiter. Capture recognises this before staging and
+returns an error that says why and shows the right call (`cerberus wait <id>` instead
+of a sleep-poll, separate calls for separate jobs). As a backstop every task's command
+inherits `CERBERUS_TASK_ID`; the CLI refuses to run with it set, which also catches
+scripts, aliases, `$BIN` and other calls no parser can see. It is a guardrail, not a
+sandbox: a command that clears the variable can still nest.
 
 
 A `timeout` on the bash call is the *task's* deadline in capture mode, not this

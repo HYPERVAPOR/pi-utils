@@ -31,8 +31,12 @@
  * Lines that start with the gate's own CLI (`cerberus wait 42`, `cerberus ls`, and
  * `cerberus wait 42 | tail -5`) also run locally, via pi's own operations: they are the
  * control plane, not work, and capturing `wait` would make it wait on a task of itself.
- * See `onlyInvokesGate` in `rules.ts` - a real command anywhere in the line puts the
- * whole line back on the capture path.
+ * See `onlyInvokesGate` in `rules.ts`.
+ *
+ * A line that mixes real work with that CLI (`sleep 20 && cerberus log 42`) is worse
+ * than either: staged, it would create a task whose job is to call the control plane.
+ * `nestsGate` catches it and `NestedGate` refuses it before staging, so nothing runs
+ * and the model gets the reason and the right call (see `nesting.ts`).
  *
  * In `gate` and `disabled` modes nothing here happens: the call goes straight to pi's
  * own `createLocalBashOperations`, so the gate keeps behaving exactly as before and
@@ -52,7 +56,7 @@ import {
   type Task,
   type TaskMeta,
 } from "./paths.ts";
-import { onlyInvokesGate } from "./rules.ts";
+import { nestsGate, onlyInvokesGate } from "./rules.ts";
 import { TIMEOUT_RC, logPath, startBackground, terminate } from "./runner.ts";
 
 export const DEFAULT_BUDGET_MS = 10_000;
@@ -79,6 +83,17 @@ export function ownerOf(options: { env?: NodeJS.ProcessEnv }): string | undefine
 export function captureBudgetMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env[BUDGET_ENV]);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_BUDGET_MS;
+}
+
+/** A command that would run as a task and invoke the gate inside it. */
+export class NestedGate extends Error {
+  readonly command: string;
+
+  constructor(command: string) {
+    super(`cerberus: refusing to nest: ${command}`);
+    this.name = "NestedGate";
+    this.command = command;
+  }
 }
 
 /** A command that outlived the budget. Its task is still running. */
@@ -175,6 +190,9 @@ export function createOperations(local: Operations, budgetMs: () => number = cap
       if (readMode(ownerOf(options)) !== "capture" || onlyInvokesGate(command)) {
         return local.exec(command, cwd, options);
       }
+      // Real work plus the CLI is a nested protocol, not a task. Refuse before
+      // staging, so nothing runs and the model gets the reason immediately.
+      if (nestsGate(command)) throw new NestedGate(command);
       return capture(command, cwd, options, budgetMs());
     },
   };
