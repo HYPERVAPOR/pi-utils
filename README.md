@@ -116,8 +116,12 @@ and result formatting are the built-in's - and runs every command through the ta
 machinery. A command that finishes within the budget comes back exactly as the
 built-in would have returned it, byte for byte, and leaves no task behind (the id was
 never shown to anyone). A command that outlives the budget keeps running as a normal
-task and the tool result is one line:
-`cerberus: still running id=<id> (cerberus wait <id>)`. The budget is 10s, or
+task, and the tool result is a short notice: its first line is
+`cerberus: still running id=<id> (cerberus wait <id>)`, followed by what happened (the
+call stopped waiting after the budget; the command was NOT killed), how to collect it
+(`wait`/`log`/`rc`), how to stop it, and a warning not to resend the command. If the
+bash call had its own `timeout`, the notice also says that deadline still applies.
+The budget is 10s, or
 `CERBERUS_CAPTURE_BUDGET_MS`. `cerberus wait <id>` then prints what pi would have
 returned - the same truncation (last 2000 lines / 50KB), the same notice, and the
 task's `out.log` where pi's temp file would be. Cancelling the call stops the task.

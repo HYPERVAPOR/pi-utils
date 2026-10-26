@@ -187,9 +187,20 @@ try {
     assert.equal(result.isError, false);
     assert.equal(result.details, undefined);
     assert.equal(result.structuredContent, undefined, "no structured output on the slow path");
-    assert.match(notice, /^cerberus: still running id=\S+ \(\S+ wait \S+\)$/, notice);
+    assert.match(notice, /^cerberus: still running id=\S+ \(\S+ wait \S+\)\n/, notice);
     const id = notice.match(/id=(\S+)/)?.[1] as string;
-    assert.equal(notice, capture.runningNotice(id, extension.SHOWN_BIN), "one notice line, nothing else");
+    assert.equal(
+      notice,
+      capture.runningNotice(id, extension.SHOWN_BIN, { budgetMs: 200 }),
+      "the notice, and nothing else",
+    );
+    // The model must learn that the budget cut the wait, not the command.
+    assert.match(notice, /waited 200ms/, notice);
+    assert.match(notice, /NOT killed/, notice);
+    assert.match(notice, new RegExp(`wait ${id}`), "says how to collect it");
+    assert.match(notice, new RegExp(`log ${id}`), "says how to peek at output");
+    assert.match(notice, new RegExp(`stop ${id}`), "says how to stop it");
+    assert.match(notice, /-help/, "points at the full CLI reference");
 
     const task = paths.taskDir(owner, id);
     assert.equal(paths.readRc(task), undefined, "the task is still running");
@@ -201,6 +212,12 @@ try {
     const plain = await run(reference, `${owner}-ref`, command);
     assert.equal(waited.stdout, textOf(plain), "wait prints what pi would have shown");
     assert.equal(paths.readRc(task), 0);
+
+    // A call's own timeout is not forgotten: the notice says it still bounds the task.
+    const timed = textOf(await run(ours, owner, command, 600));
+    assert.match(timed, /timeout of 600s still applies/, timed);
+    const timedId = timed.match(/id=(\S+)/)?.[1] as string;
+    spawnSync(BIN, ["stop", timedId, "--owner", owner], { encoding: "utf8" });
   }
 
   // --- D3b: wait formats big output like pi, not as a log tail -------------

@@ -354,7 +354,15 @@ async function registerBash(pi: ExtensionAPI): Promise<void> {
         // line it can act on instead of output that does not exist yet.
         if (err instanceof SlowTask) {
           return {
-            content: [{ type: "text" as const, text: runningNotice(err.id, SHOWN_BIN) }],
+            content: [
+              {
+                type: "text" as const,
+                text: runningNotice(err.id, SHOWN_BIN, {
+                  budgetMs: err.budgetMs,
+                  timeoutSec: params.timeout,
+                }),
+              },
+            ],
             details: undefined,
             isError: false,
           };

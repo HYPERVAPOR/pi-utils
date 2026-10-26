@@ -14,7 +14,8 @@
  * out of the way entirely.
  *
  * A command that outlives `CERBERUS_CAPTURE_BUDGET_MS` (10s by default) throws
- * `SlowTask`; the tool wrapper turns that into one line and the task keeps running.
+ * `SlowTask`; the tool wrapper turns that into a short notice (state, what was and
+ * was not returned, how to collect or stop the task) and the task keeps running.
  * A command that finishes in time leaves nothing behind: the model never saw the id,
  * its output has been streamed to pi, so the task directory is discarded.
  *
@@ -83,17 +84,53 @@ export function captureBudgetMs(env: NodeJS.ProcessEnv = process.env): number {
 /** A command that outlived the budget. Its task is still running. */
 export class SlowTask extends Error {
   readonly id: string;
+  /** How long the call waited before handing the task back. */
+  readonly budgetMs?: number;
 
-  constructor(id: string) {
+  constructor(id: string, budgetMs?: number) {
     super(`cerberus: still running id=${id}`);
     this.name = "SlowTask";
     this.id = id;
+    this.budgetMs = budgetMs;
   }
 }
 
-/** The one line the model gets instead of output that does not exist yet. */
-export function runningNotice(id: string, bin = "cerberus"): string {
-  return `cerberus: still running id=${id} (${bin} wait ${id})`;
+export interface RunningNoticeOptions {
+  /** How long the call waited; omitted only by callers that do not know. */
+  budgetMs?: number;
+  /** The bash call's own `timeout`, in seconds. It still bounds the task. */
+  timeoutSec?: number;
+}
+
+function formatDuration(ms: number): string {
+  return ms >= 1000 && ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`;
+}
+
+/**
+ * What the model gets instead of output that does not exist yet. The first line is
+ * stable (`id=<id>` is how callers and tests find the handle); the rest says what
+ * happened, that the command was not killed, and the exact commands that act on it.
+ */
+export function runningNotice(id: string, bin = "cerberus", options: RunningNoticeOptions = {}): string {
+  const waited =
+    options.budgetMs === undefined
+      ? "The bash call stopped waiting before the command finished"
+      : `The bash call waited ${formatDuration(options.budgetMs)} (cerberus's capture budget) before returning`;
+  const lines = [
+    `cerberus: still running id=${id} (${bin} wait ${id})`,
+    `${waited}. The command was NOT killed: it is still running as background task ${id}, and its output is not part of this result.`,
+    `- Collect the result: \`${bin} wait ${id}\` (blocks up to 60s; prints the output and exit code, or \`still running\` with the log so far).`,
+    `- Look without blocking: \`${bin} log ${id}\` (last 50 lines) or \`${bin} rc ${id}\` (exit code, or \`running\`).`,
+    `- Stop it: \`${bin} stop ${id}\`.`,
+    "- Do not resend the command: it would start a second copy alongside the first.",
+  ];
+  if (options.timeoutSec !== undefined) {
+    lines.push(
+      `- The call's own timeout of ${formatDuration(options.timeoutSec * 1000)} still applies: the task is killed at that deadline (exit code 124).`,
+    );
+  }
+  lines.push(`More questions? \`${bin} -help\` lists every command and flag.`);
+  return lines.join("\n");
 }
 
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -197,7 +234,7 @@ async function capture(
         await terminate(task);
         throw new Error("aborted");
       }
-      if (Date.now() >= deadline) throw new SlowTask(task.id);
+      if (Date.now() >= deadline) throw new SlowTask(task.id, budgetMs);
       await delay(pollDelay(startedAt));
     }
   } finally {
