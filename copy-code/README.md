@@ -15,8 +15,9 @@ alt+c           same as /copy-code
 
 IDs are stable and increase over time. Each block gets a `lang-N` tag above it
 (`py-5`, `ts-7`, `bash-23`; `text-N` when the fence names no language). The
-number after the hyphen is the ID. Typing a plain number matches the ID
-exactly; anything else fuzzy-matches language and code text.
+picker rows use the same tags. The number after the hyphen is the ID. Typing a
+plain number matches the ID exactly; anything else fuzzy-matches the tag and
+code text.
 
 Load with `-e extensions/copy-code.ts` in a profile (profiles use `-ne`, so
 auto-discovery is off).

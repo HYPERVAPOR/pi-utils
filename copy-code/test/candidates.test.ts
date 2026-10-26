@@ -106,12 +106,12 @@ assert.deepEqual(
   ],
 );
 
-// Labels: id, language, first non-blank line; distance separately.
-assert.equal(labelOf(found[0]!), "code block 4 · bash · newest1");
-assert.equal(labelOf(found[2]!), "code block 3 · ts · mid");
+// Labels: compact tag, then first non-blank line; distance separately.
+assert.equal(labelOf(found[0]!), "bash-4 · newest1");
+assert.equal(labelOf(found[2]!), "ts-3 · mid");
 assert.equal(whereOf(found[0]!), "last");
 assert.equal(whereOf(found[2]!), "2 back");
-assert.equal(labelOf({ block: { lang: "", code: "\n\n" }, id: 9, distance: 1 }), "code block 9 · text · ");
+assert.equal(labelOf({ block: { lang: "", code: "\n\n" }, id: 9, distance: 1 }), "text-9 · ");
 assert.equal(previewOf({ lang: "", code: "\n\n" }), "");
 assert.equal(previewOf({ lang: "ts", code: `${"x".repeat(80)}\n` }), `${"x".repeat(43)}…`);
 
@@ -121,13 +121,13 @@ assert.equal(blockTag({ id: 7, lang: "ts" }), "ts-7");
 assert.equal(blockTag({ id: 23, lang: "bash" }), "bash-23");
 assert.equal(blockTag({ id: 9, lang: "" }), "text-9");
 
-// Search text carries the bare id, the language, and the whole block ("code block" would
-// make a search for "code" match everything).
-assert.equal(searchTextOf(found[0]!), "4 bash newest1");
-assert.equal(searchTextOf({ block: { lang: "", code: "plain" }, id: 9, distance: 1 }), "9 text plain");
+// Search text carries the compact tag and the whole block. The tag already contains the
+// language and the bare id.
+assert.equal(searchTextOf(found[0]!), "bash-4 newest1");
+assert.equal(searchTextOf({ block: { lang: "", code: "plain" }, id: 9, distance: 1 }), "text-9 plain");
 assert.equal(
   searchTextOf({ block: { lang: "ts", code: "a\nworktree\nb" }, id: 12, distance: 1 }),
-  "12 ts a\nworktree\nb",
+  "ts-12 a\nworktree\nb",
 );
 
 // Picker rows: the row value is the id, and it maps back to the right candidate.
@@ -136,7 +136,7 @@ assert.deepEqual(
   rows.map((r) => r.value),
   ["4", "5", "3", "1", "2"],
 );
-assert.equal(rows[2]!.label, "code block 3 · ts · mid");
+assert.equal(rows[2]!.label, "ts-3 · mid");
 assert.equal(rows[2]!.description, "2 back");
 assert.equal(candidateOfValue(found, rows[2]!.value)?.block.code, "mid");
 assert.equal(candidateById(found, 5)?.block.code, "newest2");

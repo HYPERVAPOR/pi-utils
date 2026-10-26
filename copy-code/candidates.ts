@@ -134,9 +134,9 @@ export function whereOf(candidate: Candidate): string {
 }
 
 /**
- * How a block id is written to the user: picker rows, notifications. Kept in one place
- * because it is pure notation. Spelled out rather than `#7` (which reads like an issue
- * reference) or `[7]` (shorter, but still needs explaining).
+ * How a block id is written in notifications and errors. Kept in one place because it is
+ * pure notation. Spelled out rather than `#7` (which reads like an issue reference) or
+ * `[7]` (shorter, but still needs explaining).
  */
 export function idLabel(id: number): string {
   return `code block ${id}`;
@@ -144,28 +144,32 @@ export function idLabel(id: number): string {
 
 /**
  * The compact tag drawn above a block in the transcript: language and stable id,
- * e.g. `py-5`, or `text-5` when the fence names no language. Separate from
- * `idLabel()` because that one is prose for the picker and notifications.
+ * e.g. `py-5`, or `text-5` when the fence names no language.
  */
 export function blockTag(block: Pick<GutterBlock, "id" | "lang">): string {
   return `${block.lang || "text"}-${block.id}`;
 }
 
-/** Picker row label. The id comes from the candidate, so it cannot drift. */
+/** The compact tag for a candidate, for picker rows and search. */
+export function tagOf(candidate: Candidate): string {
+  return blockTag({ id: candidate.id, lang: candidate.block.lang });
+}
+
+/** Picker row label. The tag comes from the candidate, so it cannot drift. */
 export function labelOf(candidate: Candidate): string {
-  return `${idLabel(candidate.id)} · ${candidate.block.lang || "text"} · ${previewOf(candidate.block)}`;
+  return `${tagOf(candidate)} · ${previewOf(candidate.block)}`;
 }
 
 /**
- * Text the picker's search matches against: the bare id, language, and the whole block.
+ * Text the picker's search matches against: the compact tag and the whole block.
  *
- * The id is left as digits on purpose: spelling out "code block" here would make every
- * block match a search for "code". Digits-only queries are an exact id lookup anyway.
- * Including the full code is what makes "find the block that mentions X" work; on a
- * 2000-block session one keystroke still costs only a few milliseconds.
+ * The tag already carries both the language and the bare id, so a plain number still
+ * matches the exact id lookup in matchCandidates(). Including the full code is what makes
+ * "find the block that mentions X" work; on a 2000-block session one keystroke still costs
+ * only a few milliseconds.
  */
 export function searchTextOf(candidate: Candidate): string {
-  return `${candidate.id} ${candidate.block.lang || "text"} ${candidate.block.code}`;
+  return `${tagOf(candidate)} ${candidate.block.code}`;
 }
 
 /** One picker row. Structurally a pi-tui SelectItem. */
